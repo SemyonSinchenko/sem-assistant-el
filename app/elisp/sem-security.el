@@ -185,11 +185,17 @@ Replaces tokens with original sensitive content."
   "Sanitize all URLs in TEXT.
 Replaces http:// with hxxp:// and https:// with hxxps://.
 Use this for tasks.org and morning-read output only.
-Do NOT use for org-roam output."
+Do NOT use for org-roam output.
+
+The matching regex stops at Org-mode link delimiters (], }, \\, and |)
+so it never greedily consumes LaTeX markup or org-link brackets that
+follow a URL in malformed LLM output.  The replacement text is inserted
+verbatim (LITERAL non-nil) so backslash sequences in the sanitized URL
+are not interpreted by `replace-match'."
   (replace-regexp-in-string
-   "https?://[^ \t\n\"]+"
+   "https?://[^] \t\n\"}|\\\\]+"
    (lambda (match) (sem-security--sanitize-url match))
-   text))
+   text nil t))
 
 (provide 'sem-security)
 ;;; sem-security.el ends here

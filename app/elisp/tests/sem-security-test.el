@@ -92,6 +92,88 @@ Org-roam output should NOT call this function (policy check)."
   ;; But org-roam modules should not use it (this is a code review check)
   (should t))
 
+;;; Tests for backslash/delimiter-safe URL sanitization
+;;; Regression for "Invalid use of \\ in replacement text" errors caused by
+;;; LaTeX markup (e.g. \\texttt, \\emph, \\url) propagated from arXiv abstracts.
+
+(ert-deftest sem-security-test-url-sanitization-backslash-adjacent ()
+  "Test that a URL adjacent to a backslash does not crash and is sanitized.
+Reproduces the production failure where LaTeX like \\texttt follows a URL."
+  (let ((text "https://example.com\\texttt{word}"))
+    (let ((sanitized (sem-security-sanitize-urls text)))
+      ;; Must not signal "Invalid use of \\ in replacement text"
+      (should (string= "hxxps://example.com\\texttt{word}" sanitized))
+      ;; URL portion is sanitized, LaTeX portion preserved verbatim
+      (should (string-match-p "hxxps://example\\.com" sanitized))
+      (should-not (string-match-p "https://example\\.com" sanitized))
+      (should (string-match-p "\\\\texttt{word}" sanitized)))))
+
+(ert-deftest sem-security-test-url-sanitization-stops-at-bracket ()
+  "Test that URL matching stops at ] (Org-mode link delimiter)."
+  (let ((text "[[https://arxiv.org/abs/2406.15797][Description]]"))
+    (let ((sanitized (sem-security-sanitize-urls text)))
+      ;; Only the URL is sanitized; the Org link description is preserved.
+      (should (string= "[[hxxps://arxiv.org/abs/2406.15797][Description]]"
+                       sanitized))
+      (should-not (string-match-p "https://arxiv" sanitized)))))
+
+(ert-deftest sem-security-test-url-sanitization-stops-at-backslash ()
+  "Test that URL matching stops at a backslash character."
+  (let ((text "https://example.com\\texttt{word}"))
+    (let ((sanitized (sem-security-sanitize-urls text)))
+      ;; Only https://example.com is matched and sanitized
+      (should (string= "hxxps://example.com\\texttt{word}" sanitized)))))
+
+(ert-deftest sem-security-test-url-sanitization-stops-at-brace ()
+  "Test that URL matching stops at a closing brace."
+  (let ((text "https://example.com/page} extra"))
+    (let ((sanitized (sem-security-sanitize-urls text)))
+      (should (string= "hxxps://example.com/page} extra" sanitized))
+      (should (string-match-p "\\`hxxps://example\\.com/page\\}" sanitized)))))
+
+(ert-deftest sem-security-test-url-sanitization-stops-at-pipe ()
+  "Test that URL matching stops at a pipe character."
+  (let ((text "https://example.com|other"))
+    (let ((sanitized (sem-security-sanitize-urls text)))
+      (should (string= "hxxps://example.com|other" sanitized)))))
+
+(ert-deftest sem-security-test-url-sanitization-multiple-delimited-urls ()
+  "Test that multiple URLs inside Org-mode links are all sanitized."
+  (let ((text "[[https://a.com][A]] and [[https://b.org][B]]"))
+    (let ((sanitized (sem-security-sanitize-urls text)))
+      (should (string= "[[hxxps://a.com][A]] and [[hxxps://b.org][B]]"
+                       sanitized))
+      (should-not (string-match-p "https://" sanitized)))))
+
+(ert-deftest sem-security-test-url-sanitization-literal-preserves-backslash ()
+  "Test that LITERAL replacement mode preserves backslash sequences verbatim.
+The sanitized URL must keep \\t and \\emph sequences unchanged rather than
+letting `replace-match' interpret them as escape sequences."
+  (let ((text "https://example.com\\t\\emph{word}"))
+    (let ((sanitized (sem-security-sanitize-urls text)))
+      ;; Backslash sequences survive verbatim (no crash, no interpretation)
+      (should (string= "hxxps://example.com\\t\\emph{word}" sanitized))
+      (should (string-match-p "\\\\t\\\\emph" sanitized)))))
+
+(ert-deftest sem-security-test-url-sanitization-latex-in-org-link ()
+  "Test the exact production-failure case: LaTeX in an org-link description.
+Input shape: [[https://arxiv.org/abs/2406.15797][$\\texttt{SynC}$: Title]]"
+  (let ((text "[[https://arxiv.org/abs/2406.15797][$\\texttt{SynC}$: Synergistic Boosting]]"))
+    (let ((sanitized (sem-security-sanitize-urls text)))
+      (should (string=
+               "[[hxxps://arxiv.org/abs/2406.15797][$\\texttt{SynC}$: Synergistic Boosting]]"
+               sanitized))
+      ;; URL sanitized, LaTeX in description preserved verbatim
+      (should-not (string-match-p "https://arxiv" sanitized))
+      (should (string-match-p "\\\\texttt{SynC}" sanitized)))))
+
+(ert-deftest sem-security-test-url-sanitization-standard-still-works ()
+  "Test that standard URLs (no delimiters) are still sanitized correctly."
+  (let ((text "See https://example.com/page for info"))
+    (let ((sanitized (sem-security-sanitize-urls text)))
+      (should (string= "See hxxps://example.com/page for info" sanitized))
+      (should-not (string-match-p "https://" sanitized)))))
+
 ;;; Tests for position-preserving round-trip
 
 (ert-deftest sem-security-test-position-roundtrip ()

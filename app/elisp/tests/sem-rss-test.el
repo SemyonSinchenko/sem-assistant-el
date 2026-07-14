@@ -169,14 +169,48 @@ This is a structural test verifying the code uses sem-llm-request."
                    (lambda (_prompt _system callback context &optional _tier)
                      (funcall callback "Link: https://example.com" nil context)
                      nil))
-                  ((symbol-function 'sem-core-log)
-                   (lambda (&rest _) nil)))
+                 ((symbol-function 'sem-core-log)
+                  (lambda (&rest _) nil)))
           (sem-rss--generate-file target "prompt" "Test" 1)
           (with-temp-buffer
             (insert-file-contents target)
             (let ((content (buffer-string)))
               (should (string-match-p "hxxps://example\\.com" content))
               (should-not (string-match-p "https://example\\.com" content)))))
+      (when (file-exists-p target)
+        (delete-file target)))))
+
+(ert-deftest sem-rss-test-generate-file-latex-in-org-link ()
+  "Test sem-rss--generate-file handles LaTeX backslashes inside an org-link.
+Reproduces the production 'Invalid use of \\ in replacement text' failure:
+the LLM returns an org-link whose description contains LaTeX like
+$\\texttt{SynC}$, which must be sanitized and written without error."
+  (let ((target (make-temp-file "sem-rss-latex-" nil ".org")))
+    (unwind-protect
+        (let ((captured-error nil)
+              (response "[[https://arxiv.org/abs/2406.15797][$\\texttt{SynC}$: Synergistic Boosting]]"))
+          (cl-letf (((symbol-function 'sem-llm-request)
+                     (lambda (_prompt _system callback context &optional _tier)
+                       (funcall callback response nil context)
+                       nil))
+                   ((symbol-function 'sem-core-log)
+                    (lambda (&rest _) nil))
+                   ((symbol-function 'sem-core-log-error)
+                    (lambda (&rest _) nil)))
+            (condition-case err
+                (sem-rss--generate-file target "prompt" "Arxiv Digest" 1)
+              (error (setq captured-error err))))
+          ;; The callback MUST NOT signal "Invalid use of \\ in replacement text"
+          (should-not captured-error)
+          ;; The digest file is written successfully with sanitized URLs
+          (with-temp-buffer
+            (insert-file-contents target)
+            (let ((content (buffer-string)))
+              (should (string-match-p "hxxps://arxiv\\.org/abs/2406\\.15797"
+                                      content))
+              (should-not (string-match-p "https://arxiv" content))
+              ;; LaTeX markup in the description is preserved verbatim
+              (should (string-match-p "\\\\texttt{SynC}" content)))))
       (when (file-exists-p target)
         (delete-file target)))))
 

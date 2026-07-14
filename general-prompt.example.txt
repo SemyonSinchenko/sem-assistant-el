@@ -8,6 +8,13 @@ CRITICAL OUTPUT RULES:
 - Do NOT use markdown, code fences, XML/JSON wrappers, or any commentary.
 - Start directly with the first Org heading.
 - Follow Org heading syntax strictly.
+- NEVER use LaTeX commands or backslash escapes in output.
+  BAD: $\texttt{SynC}$ → GOOD: SynC
+  BAD: \emph{word} → GOOD: /word/
+  BAD: \url{https://...} → GOOD: [[https://...][description]]
+- Strip ALL LaTeX markup from paper titles. Use plain text only.
+- If a title contains math notation (e.g., $O(n \log n)$), replace with
+  plain-text approximation: O(n log n).
 
 Task:
 1. Analyze the following RSS entries from the last %d days.
