@@ -40,6 +40,7 @@ services:
       - WEBDAV_RUNTIME_MODE=${WEBDAV_RUNTIME_MODE:-production}
       - WEBDAV_UID=${WEBDAV_UID:-1000}
       - WEBDAV_GID=${WEBDAV_GID:-1000}
+      - WEBDAV_CERT_RELOAD_INTERVAL=${WEBDAV_CERT_RELOAD_INTERVAL:-300}
     ports:
       - "${WEBDAV_PORT:-443}:6065"
     depends_on:

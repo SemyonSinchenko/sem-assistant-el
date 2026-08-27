@@ -133,4 +133,65 @@ if ! grep -q '^Include conf/extra/httpd-webdav.conf$' "$httpd_conf"; then
   printf '\nInclude conf/extra/httpd-webdav.conf\n' >> "$httpd_conf"
 fi
 
+# --- Certificate auto-reload watcher -----------------------------------------
+# Polling interval (seconds) for detecting on-disk certificate renewals.
+# Default 300s; clamped to a minimum of 60s to prevent tight polling loops.
+WEBDAV_CERT_RELOAD_INTERVAL="${WEBDAV_CERT_RELOAD_INTERVAL:-300}"
+case "$WEBDAV_CERT_RELOAD_INTERVAL" in
+  ''|*[!0-9]*)
+    echo "[webdav] WARN: WEBDAV_CERT_RELOAD_INTERVAL='${WEBDAV_CERT_RELOAD_INTERVAL}' is not a valid integer; using default 300."
+    WEBDAV_CERT_RELOAD_INTERVAL=300
+    ;;
+esac
+if [ "$WEBDAV_RUNTIME_MODE" = "production" ] && [ "$WEBDAV_CERT_RELOAD_INTERVAL" -lt 60 ]; then
+  echo "[webdav] INFO: WEBDAV_CERT_RELOAD_INTERVAL=${WEBDAV_CERT_RELOAD_INTERVAL} is below the 60s minimum; clamping to 60."
+  WEBDAV_CERT_RELOAD_INTERVAL=60
+fi
+
+# Background watcher: detects cert fingerprint changes and gracefully reloads
+# httpd. Runs as a background subshell so httpd stays PID 1 (correct signal
+# handling on docker stop). The loop is defensive and never exits.
+(
+  set +e
+  first_poll="true"
+  prev_cert_fp=""
+  prev_organice_fp=""
+
+  while true; do
+    sleep "$WEBDAV_CERT_RELOAD_INTERVAL"
+
+    cert_fp="$(openssl x509 -in "$CERT_FILE" -noout -fingerprint -sha256 2>/dev/null)"
+    organice_fp="$(openssl x509 -in "$ORGANICE_CERT_FILE" -noout -fingerprint -sha256 2>/dev/null)"
+
+    # Transient openssl failure: skip this poll, retry next interval.
+    if [ -z "$cert_fp" ] || [ -z "$organice_fp" ]; then
+      echo "[webdav] WARN: certificate fingerprint computation failed; skipping this poll."
+      continue
+    fi
+
+    # Bootstrap: record baseline fingerprints without reloading (httpd loaded
+    # the current on-disk certs at startup).
+    if [ "$first_poll" = "true" ]; then
+      prev_cert_fp="$cert_fp"
+      prev_organice_fp="$organice_fp"
+      first_poll="false"
+      echo "[webdav] INFO: certificate watcher armed (interval=${WEBDAV_CERT_RELOAD_INTERVAL}s)."
+      continue
+    fi
+
+    # Reload only when a monitored fingerprint changed.
+    if [ "$cert_fp" != "$prev_cert_fp" ] || [ "$organice_fp" != "$prev_organice_fp" ]; then
+      echo "[webdav] INFO: certificate change detected; reloading httpd."
+      if httpd -k graceful; then
+        prev_cert_fp="$cert_fp"
+        prev_organice_fp="$organice_fp"
+        echo "[webdav] INFO: httpd graceful reload complete."
+      else
+        # Non-fatal: logged and retried on the next poll.
+        echo "[webdav] ERROR: httpd graceful reload failed; will retry on the next poll."
+      fi
+    fi
+  done
+) &
+
 exec httpd -DFOREGROUND

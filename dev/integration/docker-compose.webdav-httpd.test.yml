@@ -10,6 +10,8 @@ services:
       - WEBDAV_PASSWORD=${WEBDAV_PASSWORD:-SmokeTestPassword2026Strong}
       - WEBDAV_UID=${WEBDAV_UID:-1000}
       - WEBDAV_GID=${WEBDAV_GID:-1000}
+      - WEBDAV_RUNTIME_MODE=test
+      - WEBDAV_CERT_RELOAD_INTERVAL=2
     volumes:
       - ./test-data-httpd:/data:rw,z
       - ./static/organice:/var/www/organice:ro,z

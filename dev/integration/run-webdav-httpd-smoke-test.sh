@@ -280,7 +280,55 @@ echo "== Check 8: non-OPTIONS request without auth remains unauthorized =="
 unauth_get_status=$(curl -k -sS -o /dev/null -w '%{http_code}' "${WEBDAV_BASE_URL}/simple.txt" || true)
 assert_status "401" "$unauth_get_status" "unauthenticated GET remains unauthorized"
 
-echo "== Check 9: startup fails with missing organice certificate lineage =="
+echo "== Check 9: live certificate rotation after on-disk renewal =="
+
+# Capture the currently served WEBDAV_DOMAIN cert fingerprint via openssl s_client.
+served_fp_before=$(echo | openssl s_client -connect "localhost:${WEBDAV_PORT}" -servername "$WEBDAV_DOMAIN" 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null || true)
+if [[ -z "$served_fp_before" ]]; then
+  echo "FAIL: could not capture initial served certificate fingerprint"
+  exit 1
+fi
+echo "INFO: initial served cert fingerprint: ${served_fp_before}"
+
+# Overwrite the on-disk WEBDAV_DOMAIN certificate with a freshly generated
+# self-signed cert of distinct serial (matching key pair).
+openssl req -x509 -nodes -newkey rsa:2048 \
+  -keyout "$TEST_CERTS_DIR/live/$WEBDAV_DOMAIN/privkey.pem" \
+  -out "$TEST_CERTS_DIR/live/$WEBDAV_DOMAIN/fullchain.pem" \
+  -days 1 \
+  -set_serial 2 \
+  -subj "/CN=$WEBDAV_DOMAIN" >/dev/null 2>&1
+
+new_disk_fp=$(openssl x509 -in "$TEST_CERTS_DIR/live/$WEBDAV_DOMAIN/fullchain.pem" -noout -fingerprint -sha256 2>/dev/null || true)
+if [[ -z "$new_disk_fp" ]]; then
+  echo "FAIL: could not compute replacement on-disk certificate fingerprint"
+  exit 1
+fi
+echo "INFO: replacement on-disk cert fingerprint: ${new_disk_fp}"
+
+if [[ "$served_fp_before" == "$new_disk_fp" ]]; then
+  echo "FAIL: replacement cert has the same fingerprint as the original"
+  exit 1
+fi
+
+# Wait beyond the configured reload interval (2s in test) for the watcher to
+# detect the on-disk change and gracefully reload httpd.
+sleep 6
+
+served_fp_after=$(echo | openssl s_client -connect "localhost:${WEBDAV_PORT}" -servername "$WEBDAV_DOMAIN" 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null || true)
+echo "INFO: post-rotation served cert fingerprint: ${served_fp_after}"
+
+if [[ "$served_fp_after" != "$new_disk_fp" ]]; then
+  echo "FAIL: served certificate was not rotated to match the renewed on-disk certificate"
+  exit 1
+fi
+if [[ "$served_fp_after" == "$served_fp_before" ]]; then
+  echo "FAIL: served certificate fingerprint is unchanged after on-disk renewal"
+  exit 1
+fi
+echo "PASS: served certificate rotated to match renewed on-disk certificate"
+
+echo "== Check 10: startup fails with missing organice certificate lineage =="
 $COMPOSE_CMD -f "$COMPOSE_FILE" -f "$COMPOSE_OVERRIDE" down -v >/dev/null 2>&1 || true
 rm -f "$TEST_CERTS_DIR/live/$ORGANICE_DOMAIN/fullchain.pem" "$TEST_CERTS_DIR/live/$ORGANICE_DOMAIN/privkey.pem"
 
