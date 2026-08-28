@@ -35,6 +35,7 @@ The system SHALL implement the following complete schedule with no gaps or overl
 30   9 * * *  root  emacsclient -e "(sem-rss-generate-morning-digest)"
 */15 * * * *  root  /usr/local/bin/sem-daemon-watchdog
 0 */3 * * *  root  emacsclient -e "(sem-git-sync-org-roam)"
+0    3 * * *  root  emacsclient -e "(sem-rss-archive-old-digests)"
 ```
 
 #### Scenario: Inbox processing every 30 minutes in client timezone
@@ -61,11 +62,15 @@ The system SHALL implement the following complete schedule with no gaps or overl
 - **WHEN** every 3rd hour arrives at minute 0 in `CLIENT_TIMEZONE`
 - **THEN** `sem-git-sync-org-roam` is called
 
+#### Scenario: Morning-read archival daily at 3AM in client timezone
+- **WHEN** 3:00 AM arrives in `CLIENT_TIMEZONE`
+- **THEN** `sem-rss-archive-old-digests` is called
+- **AND** digest files from previous months are moved to `/data/archive/`
+
 #### Scenario: Cron timezone comes from CLIENT_TIMEZONE
 - **WHEN** the container loads cron configuration for daemon schedules
 - **THEN** cron evaluates schedule expressions in `CLIENT_TIMEZONE`
 - **AND** schedule timing does not depend on implicit host/container default timezone
-
 ### Requirement: Timezone bootstrap precedes cron daemon startup
 The system SHALL bootstrap runtime timezone files and environment from `CLIENT_TIMEZONE` before launching the cron daemon. Startup MUST fail fast when timezone bootstrap cannot be completed.
 

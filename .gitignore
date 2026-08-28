@@ -26,6 +26,7 @@ app/elisp/eln-cache/
 .qwen
 .opencode
 .aider*
+.agent*
 
 # Integration test data and results
 test-results/

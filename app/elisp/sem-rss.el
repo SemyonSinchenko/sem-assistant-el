@@ -36,6 +36,11 @@
 (defconst sem-rss-dir "/data/morning-read/"
   "Directory where daily digests are stored.")
 
+(defconst sem-rss-archive-dir "/data/archive/"
+  "Directory where archived digest files are stored.
+Digest files from previous months are moved into a `YYYY-MM'
+subdirectory of this directory.")
+
 (defconst sem-rss-feeds-file "/data/feeds.org"
   "Path to feeds configuration file in Org format.")
 
@@ -534,6 +539,72 @@ This is the cron entry point callable via `emacsclient -e`."
                             nil
                             nil)
         (message "SEM: RSS digest error: %s" (error-message-string err))))))
+
+;;; Digest Archival
+
+(defun sem-rss--archive-month-from-filename (filename)
+  "Return the `YYYY-MM' month of digest FILENAME, or nil if absent.
+FILENAME is a file name without directory.  Digest files carry a
+leading `YYYY-MM-DD' date, e.g. `2026-03-15.org' or
+`2026-03-15-arxiv.org'."
+  (let ((name (file-name-nondirectory filename)))
+    (and (string-match "\\`\\([0-9]\\{4\\}-[0-9]\\{2\\}\\)-" name)
+         (match-string 1 name))))
+
+(defun sem-rss-archive-old-digests (&optional now)
+  "Move digest files from previous months into `sem-rss-archive-dir'.
+Each regular file in `sem-rss-dir' whose filename carries a
+`YYYY-MM' month earlier than the calendar month of NOW (default
+`current-time') is moved into `YYYY-MM/' under
+`sem-rss-archive-dir', creating directories on demand.  Files
+without a recognizable month prefix are skipped and logged.
+Successful moves are logged with status OK; a failing move is
+logged via `sem-core-log-error' and does not abort the remaining
+files.  Idempotent: a run with nothing to archive moves nothing.
+NOW is used by tests to pin the reference time.
+
+This is the cron entry point callable via `emacsclient -e'."
+  (sem-core-run-cron-guarded
+   "rss-morning-archive" "rss" "RSS-DIGEST"
+   (lambda ()
+     (condition-case err
+         (let* ((current-month (format-time-string "%Y-%m" now))
+                (moved 0))
+           (make-directory sem-rss-archive-dir t)
+           (when (file-directory-p sem-rss-dir)
+             (dolist (file (directory-files
+                            sem-rss-dir t directory-files-no-dot-files-regexp))
+               (when (file-regular-p file)
+                 (let* ((name (file-name-nondirectory file))
+                        (month (sem-rss--archive-month-from-filename name)))
+                   (cond
+                    ((null month)
+                     (sem-core-log "rss" "RSS-DIGEST" "SKIP"
+                                   (format "No month prefix, not archived: %s"
+                                           name)))
+                    ((string< month current-month)
+                     (condition-case move-err
+                         (let ((dest-dir
+                                (expand-file-name month sem-rss-archive-dir)))
+                           (make-directory dest-dir t)
+                           (rename-file file (expand-file-name name dest-dir))
+                           (setq moved (1+ moved))
+                           (sem-core-log "rss" "RSS-DIGEST" "OK"
+                                         (format "Archived %s to %s" name month)))
+                       (error
+                        (sem-core-log-error "rss" "RSS-DIGEST"
+                                            (error-message-string move-err)
+                                            file)
+                        (message "SEM: archive move failed for %s: %s"
+                                 name (error-message-string move-err)))))))))
+           moved))
+       (error
+        (sem-core-log-error "rss" "RSS-DIGEST"
+                            (error-message-string err)
+                            nil)
+        (message "SEM: RSS digest archival error: %s"
+                 (error-message-string err))
+        nil)))))
 
 (provide 'sem-rss)
 ;;; sem-rss.el ends here

@@ -20,6 +20,10 @@
 # RSS morning digest - daily at 9:30 AM (after all elfeed updates complete)
 30 9 * * *	root	emacsclient -s sem-server -e "(sem-rss-generate-morning-digest)"
 
+# Morning-read archival - daily at 2:30 AM (moves previous-month digest files
+# to /data/archive/YYYY-MM/; idempotent, safe to run any day)
+30 2 * * *	root	emacsclient -s sem-server -e "(sem-rss-archive-old-digests)"
+
 # Daemon readiness watchdog - every 15 minutes
 */15 * * * *	root	/usr/local/bin/sem-daemon-watchdog
 

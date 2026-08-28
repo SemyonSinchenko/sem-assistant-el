@@ -289,5 +289,151 @@ RSS digest passes nil hash - this should be a no-op."
       (delete-file tmp-file)
       (delete-file cache-file))))
 
+;;; Tests for sem-rss-archive-old-digests
+
+(defun sem-rss-test--write-digest-file (path content)
+  "Write CONTENT to PATH, creating parent directories as needed."
+  (make-directory (file-name-directory path) t)
+  (with-temp-file path (insert content)))
+
+(defun sem-rss-test--file-contents (path)
+  "Return the contents of the file at PATH as a string."
+  (with-temp-buffer
+    (insert-file-contents path)
+    (buffer-string)))
+
+(defun sem-rss-test--make-archive-env ()
+  "Create temp source/archive dirs and redirected runtime paths.
+Returns a plist with :source, :archive and :state for teardown."
+  (let ((source (make-temp-file "sem-rss-arch-src-" t))
+        (archive (make-temp-file "sem-rss-arch-dst-" t))
+        (state (sem-mock-setup-test-data-paths)))
+    (list :source source :archive archive :state state)))
+
+(defun sem-rss-test--teardown-archive-env (env)
+  "Clean up directories and runtime paths created by `sem-rss-test--make-archive-env'."
+  (let ((source (plist-get env :source))
+        (archive (plist-get env :archive))
+        (state (plist-get env :state)))
+    (sem-mock-teardown-test-data-paths state)
+    (when (file-directory-p source)
+      (delete-directory source t))
+    (when (file-directory-p archive)
+      (delete-directory archive t))))
+
+(ert-deftest sem-rss-test-archive-moves-previous-month-files ()
+  "Previous-month digest files move to the month subdir; current month stays."
+  (let* ((env (sem-rss-test--make-archive-env))
+         (source (plist-get env :source))
+         (archive (plist-get env :archive)))
+    (unwind-protect
+        (let ((sem-rss-dir source)
+              (sem-rss-archive-dir archive))
+          (sem-rss-test--write-digest-file
+           (expand-file-name "2026-03-15.org" source) "general march")
+          (sem-rss-test--write-digest-file
+           (expand-file-name "2026-03-15-arxiv.org" source) "arxiv march")
+          (sem-rss-test--write-digest-file
+           (expand-file-name "2026-04-02.org" source) "general april")
+          (let ((moved (sem-rss-archive-old-digests (encode-time 0 0 0 2 4 2026))))
+            (should (= moved 2))
+            (should-not (file-exists-p (expand-file-name "2026-03-15.org" source)))
+            (should-not (file-exists-p (expand-file-name "2026-03-15-arxiv.org" source)))
+            (should (file-exists-p (expand-file-name "2026-04-02.org" source)))
+            (should (string= (sem-rss-test--file-contents
+                              (expand-file-name "2026-03/2026-03-15.org" archive))
+                             "general march"))
+            (should (string= (sem-rss-test--file-contents
+                              (expand-file-name "2026-03/2026-03-15-arxiv.org" archive))
+                             "arxiv march"))))
+      (sem-rss-test--teardown-archive-env env))))
+
+(ert-deftest sem-rss-test-archive-idempotent-second-run ()
+  "A second run right after the first moves nothing."
+  (let* ((env (sem-rss-test--make-archive-env))
+         (source (plist-get env :source))
+         (archive (plist-get env :archive)))
+    (unwind-protect
+        (let ((sem-rss-dir source)
+              (sem-rss-archive-dir archive)
+              (ref (encode-time 0 0 0 2 4 2026)))
+          (sem-rss-test--write-digest-file
+           (expand-file-name "2026-03-15.org" source) "general march")
+          (should (= (sem-rss-archive-old-digests ref) 1))
+          (should (= (sem-rss-archive-old-digests ref) 0))
+          (should (file-exists-p (expand-file-name "2026-03/2026-03-15.org" archive))))
+      (sem-rss-test--teardown-archive-env env))))
+
+(ert-deftest sem-rss-test-archive-empty-folder-is-no-op ()
+  "Running over a folder with only current-month files moves nothing."
+  (let* ((env (sem-rss-test--make-archive-env))
+         (source (plist-get env :source))
+         (archive (plist-get env :archive)))
+    (unwind-protect
+        (let ((sem-rss-dir source)
+              (sem-rss-archive-dir archive))
+          (sem-rss-test--write-digest-file
+           (expand-file-name "2026-04-02.org" source) "current")
+          (should (zerop (sem-rss-archive-old-digests (encode-time 0 0 0 2 4 2026))))
+          (should (file-exists-p (expand-file-name "2026-04-02.org" source))))
+      (sem-rss-test--teardown-archive-env env))))
+
+(ert-deftest sem-rss-test-archive-creates-dirs-and-catches-up-backlog ()
+  "Archive/month dirs are created on demand and a multi-month backlog lands in one run."
+  (let* ((env (sem-rss-test--make-archive-env))
+         (source (plist-get env :source))
+         (archive (plist-get env :archive)))
+    (unwind-protect
+        (let ((sem-rss-dir source)
+              (sem-rss-archive-dir archive))
+          (sem-rss-test--write-digest-file
+           (expand-file-name "2026-01-05.org" source) "jan")
+          (sem-rss-test--write-digest-file
+           (expand-file-name "2026-02-10-arxiv.org" source) "feb arxiv")
+          (sem-rss-test--write-digest-file
+           (expand-file-name "2026-03-20.org" source) "mar")
+          ;; Remove the archive dir so the routine must recreate it on demand.
+          (delete-directory archive t)
+          (should (= (sem-rss-archive-old-digests (encode-time 0 0 0 10 4 2026)) 3))
+          (should (file-exists-p (expand-file-name "2026-01/2026-01-05.org" archive)))
+          (should (file-exists-p (expand-file-name "2026-02/2026-02-10-arxiv.org" archive)))
+          (should (file-exists-p (expand-file-name "2026-03/2026-03-20.org" archive)))
+          (should-not (directory-files source nil directory-files-no-dot-files-regexp)))
+      (sem-rss-test--teardown-archive-env env))))
+
+(ert-deftest sem-rss-test-archive-skips-files-without-month-prefix ()
+  "Files without a YYYY-MM filename prefix are skipped, logged, and left in place."
+  (let* ((env (sem-rss-test--make-archive-env))
+         (source (plist-get env :source))
+         (archive (plist-get env :archive)))
+    (unwind-protect
+        (let ((sem-rss-dir source)
+              (sem-rss-archive-dir archive))
+          (sem-rss-test--write-digest-file
+           (expand-file-name "notes.org" source) "no date")
+          (should (zerop (sem-rss-archive-old-digests (encode-time 0 0 0 2 4 2026))))
+          (should (file-exists-p (expand-file-name "notes.org" source))))
+      (sem-rss-test--teardown-archive-env env))))
+
+(ert-deftest sem-rss-test-archive-move-failure-is-logged-not-raised ()
+  "A failing move is logged to errors.org and does not signal to the caller."
+  (let* ((env (sem-rss-test--make-archive-env))
+         (source (plist-get env :source))
+         (archive (plist-get env :archive)))
+    (unwind-protect
+        (let ((sem-rss-dir source)
+              (sem-rss-archive-dir archive))
+          (sem-rss-test--write-digest-file
+           (expand-file-name "2026-03-15.org" source) "general march")
+          (cl-letf (((symbol-function 'rename-file)
+                     (lambda (&rest _) (error "Permission denied"))))
+            (should (zerop (sem-rss-archive-old-digests (encode-time 0 0 0 2 4 2026)))))
+          ;; The file stays in place and the failure was recorded.
+          (should (file-exists-p (expand-file-name "2026-03-15.org" source)))
+          (should (file-exists-p sem-core-errors-file))
+          (should (string-match-p "Permission denied"
+                                  (sem-rss-test--file-contents sem-core-errors-file))))
+      (sem-rss-test--teardown-archive-env env))))
+
 (provide 'sem-rss-test)
 ;;; sem-rss-test.el ends here
