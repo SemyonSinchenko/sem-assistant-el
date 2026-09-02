@@ -172,6 +172,24 @@ Replaces tokens with original sensitive content."
 
 ;;; URL Sanitization
 
+(defun sem-security--url-host (url)
+  "Return the downcased host component of URL, or nil when none.
+The scheme, userinfo, port, path, query, and fragment are ignored.
+The host is downcased so callers can compare hosts case-insensitively."
+  (when (and (stringp url)
+             (string-match
+              "\\`[A-Za-z][A-Za-z0-9+.-]*://\\(?:[^/?#@]*@\\)?\\([^/?#@:]+\\)" url))
+    (downcase (match-string 1 url))))
+
+(defun sem-security--host-base-domain (host)
+  "Return the base domain (last two labels) of downcased HOST.
+Hosts with fewer than two labels are returned downcased as-is.
+Returns nil when HOST is nil or contains no labels."
+  (when host
+    (let ((labels (split-string (downcase host) "\\." t)))
+      (when labels
+        (mapconcat #'identity (last labels 2) ".")))))
+
 (defun sem-security--sanitize-url (url)
   "Sanitize a single URL by replacing http/https with hxxp/hxxps."
   (cond
@@ -181,9 +199,31 @@ Replaces tokens with original sensitive content."
     (concat "hxxp://" (substring url 7)))
    (t url)))
 
-(defun sem-security-sanitize-urls (text)
+(defun sem-security--url-trusted-p (url trusted-hosts trusted-base-domains)
+  "Return non-nil when the host of URL is covered by the trusted set.
+TRUSTED-HOSTS is a list of downcased trusted host strings and
+TRUSTED-BASE-DOMAINS their precomputed base domains (last two labels).
+URL is trusted when its host equals an entry of TRUSTED-HOSTS, or when
+the base domain of its host equals an entry of TRUSTED-BASE-DOMAINS.
+Only the host component of URL is considered: scheme, port, path, and
+query are ignored.  Always returns nil when the trusted set is empty."
+  (when trusted-hosts
+    (let ((host (sem-security--url-host url)))
+      (and host
+           (or (member host trusted-hosts)
+               (member (sem-security--host-base-domain host)
+                       trusted-base-domains))))))
+
+(defun sem-security-sanitize-urls (text &optional trusted-hosts)
   "Sanitize all URLs in TEXT.
 Replaces http:// with hxxp:// and https:// with hxxps://.
+When TRUSTED-HOSTS is non-nil (a list of trusted host strings), URLs
+whose host equals one of them, or whose host shares the base domain
+(last two labels) with one of them, are preserved verbatim; all other
+URLs are still defanged.  Host comparison is case-insensitive and
+considers only the host component, ignoring scheme, port, path, and
+query.  A nil or empty TRUSTED-HOSTS defangs every URL (mask-all
+default).
 Use this for tasks.org and morning-read output only.
 Do NOT use for org-roam output.
 
@@ -192,10 +232,22 @@ so it never greedily consumes LaTeX markup or org-link brackets that
 follow a URL in malformed LLM output.  The replacement text is inserted
 verbatim (LITERAL non-nil) so backslash sequences in the sanitized URL
 are not interpreted by `replace-match'."
-  (replace-regexp-in-string
-   "https?://[^] \t\n\"}|\\\\]+"
-   (lambda (match) (sem-security--sanitize-url match))
-   text nil t))
+  (let* ((normalized-hosts
+          (delq nil (mapcar (lambda (host)
+                              (and (stringp host) (downcase host)))
+                            trusted-hosts)))
+         (base-domains
+          (delq nil (mapcar #'sem-security--host-base-domain normalized-hosts))))
+    ;; The matcher helper performs its own `string-match' calls, so guard
+    ;; the loop's match data with `save-match-data'.
+    (replace-regexp-in-string
+     "https?://[^] \t\n\"}|\\\\]+"
+     (lambda (match)
+       (save-match-data
+         (if (sem-security--url-trusted-p match normalized-hosts base-domains)
+             match
+           (sem-security--sanitize-url match))))
+     text nil t)))
 
 (provide 'sem-security)
 ;;; sem-security.el ends here

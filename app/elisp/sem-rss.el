@@ -5,7 +5,9 @@
 ;; This module generates daily RSS/arXiv digests via LLM.
 ;; Ported from tools-rss.el with all interactive patterns stripped.
 ;; Configuration is via environment variables, not defcustom.
-;; Digest output is operator-facing, so URLs are defanged before write.
+;; Digest output is operator-facing, so URLs are defanged before write,
+;; except links to trusted feed source hosts (derived from `elfeed-feeds'
+;; via `sem-rss--trusted-hosts-from-feeds'), which stay clickable.
 
 ;;; Code:
 
@@ -69,6 +71,28 @@ Loaded lazily on first use from general-prompt.txt.")
 (defvar sem-rss-arxiv-prompt-template nil
   "Template for arXiv digest prompts.
 Loaded lazily on first use from arxiv-prompt.txt.")
+
+;;; Trusted Source Hosts
+
+(defun sem-rss--trusted-hosts-from-feeds ()
+  "Derive the trusted host set for digest URL masking from `elfeed-feeds'.
+Feed entries are either URL strings or (URL . TAGS) lists.  Returns the
+distinct set of feed URL hosts plus their base domains (last two labels,
+see `sem-security--host-base-domain'), all downcased.  Returns nil when
+no feed hosts can be derived, which keeps `sem-security-sanitize-urls'
+in its mask-all mode (every URL defanged)."
+  (let ((hosts nil))
+    (dolist (entry elfeed-feeds)
+      (let* ((url (cond
+                   ((stringp entry) entry)
+                   ((consp entry) (car entry))))
+             (host (sem-security--url-host url)))
+        (when host
+          (cl-pushnew host hosts :test #'string=))))
+    (when hosts
+      (delete-dups
+       (append hosts
+               (delq nil (mapcar #'sem-security--host-base-domain hosts)))))))
 
 ;;; Feed Parsing and Reload Cache
 
@@ -412,66 +436,78 @@ On malformed LLM output: log to errors.org, do not write file.
 On API error: log to errors.org with RETRY status, do not write file.
 
 Returns immediately (async). The CALLBACK is invoked when complete."
-      (let* ((days-int (truncate days))
-          ;; Compute date range
-          (from-date (time-subtract (current-time) (days-to-time days-int)))
-          (to-date (current-time))
-          (from-org (sem-time-format-string "[%Y-%m-%d %a]" from-date))
-          (to-org (sem-time-format-string "[%Y-%m-%d %a]" to-date))
-          (system-prompt "You are a helpful Technical Editor assistant. You output ONLY raw Org-mode text. Never use markdown code fences or any wrapper syntax. Never include reasoning or commentary outside of the requested Org-mode structure. Start your response directly with the first Org-mode heading."))
-
-    ;; Use sem-llm-request instead of direct gptel-request
-    (require 'sem-llm)
-    (sem-llm-request prompt system-prompt
-                     (lambda (response info context)
-                       "Callback for sem-llm-request in RSS digest.
+    (let* ((days-int (truncate days))
+           ;; Compute date range
+           (from-date (time-subtract (current-time) (days-to-time days-int)))
+           (to-date (current-time))
+           (from-org (sem-time-format-string "[%Y-%m-%d %a]" from-date))
+           (to-org (sem-time-format-string "[%Y-%m-%d %a]" to-date))
+           (digest-type (if (string-prefix-p "Arxiv" title-prefix)
+                            "ARXIV-DIGEST" "RSS-DIGEST"))
+           ;; Trusted source hosts for whitelist-aware URL masking, derived
+           ;; from the current elfeed feed configuration.  An empty set keeps
+           ;; the mask-all default (every URL defanged).
+           (trusted-hosts (sem-rss--trusted-hosts-from-feeds))
+           (system-prompt "You are a helpful Technical Editor assistant. You output ONLY raw Org-mode text. Never use markdown code fences or any wrapper syntax. Never include reasoning or commentary outside of the requested Org-mode structure. Start your response directly with the first Org-mode heading."))
+      (sem-core-log "rss" digest-type "OK"
+                    (format "Digest URL masking whitelist: %d trusted hosts"
+                            (length trusted-hosts)))
+      ;; Use sem-llm-request instead of direct gptel-request
+      (require 'sem-llm)
+      (sem-llm-request prompt system-prompt
+                       (lambda (response info context)
+                         "Callback for sem-llm-request in RSS digest.
 Handles API errors (RETRY) and malformed output (DLQ)."
-                       (let ((target (plist-get context :target-path))
-                             (title (plist-get context :title-prefix))
-                             (from (plist-get context :from-org))
-                             (to (plist-get context :to-org))
-                             (digest-type (if (string-prefix-p "Arxiv" (plist-get context :title-prefix))
-                                              "ARXIV-DIGEST" "RSS-DIGEST"))
-                             (success nil))
-                         (cond
-                          ;; Success - write to file
-                           ((and response (not (string-empty-p response)))
-                            (let ((sanitized-response
-                                   (sem-security-sanitize-urls response)))
-                             (with-temp-file target
-                               (insert "#+TITLE: " title ": " (sem-time-format-string "%Y-%m-%d") "\n")
-                               (insert "#+FROM: " from "\n")
-                               (insert "#+TO: " to "\n")
-                               (insert "#+DATE: " (sem-time-format-string "[%Y-%m-%d %a]") "\n")
-                               (insert "#+STARTUP: showall\n\n")
-                               (insert sanitized-response)))
-                            (sem-core-log "rss" digest-type "OK"
-                                          (format "Digest written to %s" target)
-                                          nil)
-                            (setq success t))
-                          ;; API error - log RETRY, do not write file
-                          ((plist-get info :error)
-                           (sem-core-log-error "rss" digest-type
-                                               (format "API error: %s" (plist-get info :error))
-                                               (plist-get context :prompt)
-                                               nil)
-                           (setq success nil))
-                          ;; Malformed/empty response - log DLQ, do not write file
-                          (t
-                           (sem-core-log-error "rss" digest-type
-                                               "Malformed or empty LLM response"
-                                               (plist-get context :prompt)
-                                               response)
-                           (setq success nil)))
-                         ;; Call the completion callback if provided
-                         (when callback
-                           (funcall callback success context))))
-                     (list :target-path target-path :title-prefix title-prefix
-                           :from-org from-org :to-org to-org :prompt prompt)
-                     'medium)
+                         (let ((target (plist-get context :target-path))
+                               (title (plist-get context :title-prefix))
+                               (from (plist-get context :from-org))
+                               (to (plist-get context :to-org))
+                               (digest-type (plist-get context :digest-type))
+                               (trusted-hosts (plist-get context :trusted-hosts))
+                               (success nil))
+                           (cond
+                            ;; Success - write to file
+                             ((and response (not (string-empty-p response)))
+                              (let ((sanitized-response
+                                     (sem-security-sanitize-urls
+                                      response trusted-hosts)))
+                               (with-temp-file target
+                                 (insert "#+TITLE: " title ": " (sem-time-format-string "%Y-%m-%d") "\n")
+                                 (insert "#+FROM: " from "\n")
+                                 (insert "#+TO: " to "\n")
+                                 (insert "#+DATE: " (sem-time-format-string "[%Y-%m-%d %a]") "\n")
+                                 (insert "#+STARTUP: showall\n\n")
+                                 (insert sanitized-response)))
+                              (sem-core-log "rss" digest-type "OK"
+                                            (format "Digest written to %s" target)
+                                            nil)
+                              (setq success t))
+                            ;; API error - log RETRY, do not write file
+                            ((plist-get info :error)
+                             (sem-core-log-error "rss" digest-type
+                                                 (format "API error: %s" (plist-get info :error))
+                                                 (plist-get context :prompt)
+                                                 nil)
+                             (setq success nil))
+                            ;; Malformed/empty response - log DLQ, do not write file
+                            (t
+                             (sem-core-log-error "rss" digest-type
+                                                 "Malformed or empty LLM response"
+                                                 (plist-get context :prompt)
+                                                 response)
+                             (setq success nil)))
+                           ;; Call the completion callback if provided
+                           (when callback
+                             (funcall callback success context))))
+                       (list :target-path target-path :title-prefix title-prefix
+                             :from-org from-org :to-org to-org :prompt prompt
+                             :digest-type digest-type
+                             :trusted-hosts trusted-hosts)
+                       'medium)
 
     ;; Return immediately - processing continues asynchronously
     t))
+
 
 ;;; Cron Entry Point
 

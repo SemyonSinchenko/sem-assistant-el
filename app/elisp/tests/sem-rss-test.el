@@ -151,32 +151,37 @@ This is a structural test verifying the code uses sem-llm-request."
 (ert-deftest sem-rss-test-generate-file-uses-medium-tier ()
   "Test RSS digest generation requests medium tier intent."
   (let ((captured-tier nil))
-    (cl-letf (((symbol-function 'sem-llm-request)
-               (lambda (_prompt _system callback context &optional tier)
-                 (setq captured-tier tier)
-                 (funcall callback nil (list :error "mock") context)
-                 nil))
-              ((symbol-function 'sem-core-log-error)
-               (lambda (&rest _args) nil)))
-      (sem-rss--generate-file "/tmp/test-rss-tier.org" "prompt" "Test" 1)
-      (should (eq captured-tier 'medium)))))
+    (let ((elfeed-feeds nil))
+      (cl-letf (((symbol-function 'sem-llm-request)
+                 (lambda (_prompt _system callback context &optional tier)
+                   (setq captured-tier tier)
+                   (funcall callback nil (list :error "mock") context)
+                   nil))
+                ((symbol-function 'sem-core-log)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'sem-core-log-error)
+                 (lambda (&rest _args) nil)))
+        (sem-rss--generate-file "/tmp/test-rss-tier.org" "prompt" "Test" 1)
+        (should (eq captured-tier 'medium))))))
 
 (ert-deftest sem-rss-test-generate-file-defangs-urls-before-write ()
-  "Test RSS file output applies URL defanging contract."
+  "Test RSS file output defangs URLs when no trusted hosts exist.
+With an empty feed list every URL in the digest is written defanged."
   (let ((target (make-temp-file "sem-rss-sanitize-" nil ".org")))
     (unwind-protect
-        (cl-letf (((symbol-function 'sem-llm-request)
-                   (lambda (_prompt _system callback context &optional _tier)
-                     (funcall callback "Link: https://example.com" nil context)
-                     nil))
-                 ((symbol-function 'sem-core-log)
-                  (lambda (&rest _) nil)))
-          (sem-rss--generate-file target "prompt" "Test" 1)
-          (with-temp-buffer
-            (insert-file-contents target)
-            (let ((content (buffer-string)))
-              (should (string-match-p "hxxps://example\\.com" content))
-              (should-not (string-match-p "https://example\\.com" content)))))
+        (let ((elfeed-feeds nil))
+          (cl-letf (((symbol-function 'sem-llm-request)
+                     (lambda (_prompt _system callback context &optional _tier)
+                       (funcall callback "Link: https://example.com" nil context)
+                       nil))
+                   ((symbol-function 'sem-core-log)
+                    (lambda (&rest _) nil)))
+            (sem-rss--generate-file target "prompt" "Test" 1)
+            (with-temp-buffer
+              (insert-file-contents target)
+              (let ((content (buffer-string)))
+                (should (string-match-p "hxxps://example\\.com" content))
+                (should-not (string-match-p "https://example\\.com" content))))))
       (when (file-exists-p target)
         (delete-file target)))))
 
@@ -189,17 +194,18 @@ $\\texttt{SynC}$, which must be sanitized and written without error."
     (unwind-protect
         (let ((captured-error nil)
               (response "[[https://arxiv.org/abs/2406.15797][$\\texttt{SynC}$: Synergistic Boosting]]"))
-          (cl-letf (((symbol-function 'sem-llm-request)
-                     (lambda (_prompt _system callback context &optional _tier)
-                       (funcall callback response nil context)
-                       nil))
-                   ((symbol-function 'sem-core-log)
-                    (lambda (&rest _) nil))
-                   ((symbol-function 'sem-core-log-error)
-                    (lambda (&rest _) nil)))
-            (condition-case err
-                (sem-rss--generate-file target "prompt" "Arxiv Digest" 1)
-              (error (setq captured-error err))))
+          (let ((elfeed-feeds nil))
+            (cl-letf (((symbol-function 'sem-llm-request)
+                       (lambda (_prompt _system callback context &optional _tier)
+                         (funcall callback response nil context)
+                         nil))
+                      ((symbol-function 'sem-core-log)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'sem-core-log-error)
+                       (lambda (&rest _) nil)))
+              (condition-case err
+                  (sem-rss--generate-file target "prompt" "Arxiv Digest" 1)
+                (error (setq captured-error err)))))
           ;; The callback MUST NOT signal "Invalid use of \\ in replacement text"
           (should-not captured-error)
           ;; The digest file is written successfully with sanitized URLs
@@ -211,6 +217,131 @@ $\\texttt{SynC}$, which must be sanitized and written without error."
               (should-not (string-match-p "https://arxiv" content))
               ;; LaTeX markup in the description is preserved verbatim
               (should (string-match-p "\\\\texttt{SynC}" content)))))
+      (when (file-exists-p target)
+        (delete-file target)))))
+
+;;; Tests for trusted host derivation from elfeed feeds
+
+(ert-deftest sem-rss-test-trusted-hosts-from-string-feed-entries ()
+  "String feed entries contribute their host and its base domain."
+  (let ((elfeed-feeds '("https://rss.arxiv.org/rss/cs.LG"
+                        "http://example.org/feed.xml")))
+    (let ((hosts (sem-rss--trusted-hosts-from-feeds)))
+      (should (member "rss.arxiv.org" hosts))
+      (should (member "arxiv.org" hosts))     ; base domain of the feed host
+      (should (member "example.org" hosts))
+      (should (= (length hosts) 3)))))
+
+(ert-deftest sem-rss-test-trusted-hosts-from-list-feed-entries ()
+  "List (URL . TAGS) feed entries contribute their host and base domain."
+  (let ((elfeed-feeds '(("https://rss.arxiv.org/rss/cs.DB" arxiv csdb)
+                        ("http://example.org/feed.xml" vendors))))
+    (let ((hosts (sem-rss--trusted-hosts-from-feeds)))
+      (should (member "rss.arxiv.org" hosts))
+      (should (member "arxiv.org" hosts))
+      (should (member "example.org" hosts))
+      (should (= (length hosts) 3)))))
+
+(ert-deftest sem-rss-test-trusted-hosts-deduplicates-hosts ()
+  "Duplicate feed hosts (and shared base domains) appear once."
+  (let ((elfeed-feeds '("https://arxiv.org/rss/cs.LG"
+                        ("https://rss.arxiv.org/rss/cs.DB" csdb)
+                        "https://arxiv.org/rss/cs.CL")))
+    (let ((hosts (sem-rss--trusted-hosts-from-feeds)))
+      (should (member "arxiv.org" hosts))
+      (should (member "rss.arxiv.org" hosts))
+      (should (= (length hosts) (length (delete-dups (copy-sequence hosts))))))))
+
+(ert-deftest sem-rss-test-trusted-hosts-empty-feeds-returns-nil ()
+  "An empty or missing feed list yields an empty trusted set."
+  (let ((elfeed-feeds '()))
+    (should (null (sem-rss--trusted-hosts-from-feeds))))
+  (let ((elfeed-feeds nil))
+    (should (null (sem-rss--trusted-hosts-from-feeds)))))
+
+;;; Tests for whitelist-aware digest output
+
+(ert-deftest sem-rss-test-generate-file-preserves-trusted-source-urls ()
+  "Trusted feed hosts are written verbatim; untrusted URLs stay defanged."
+  (let ((target (make-temp-file "sem-rss-trusted-" nil ".org")))
+    (unwind-protect
+        (let ((elfeed-feeds '("https://arxiv.org/rss/cs.LG")))
+          (cl-letf (((symbol-function 'sem-llm-request)
+                     (lambda (_prompt _system callback context &optional _tier)
+                       (funcall callback
+                                "Paper: [[https://arxiv.org/abs/2406.15797][SynC]]\nOther: https://example.com/page"
+                                nil context)
+                       nil))
+                    ((symbol-function 'sem-core-log)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'sem-core-log-error)
+                     (lambda (&rest _) nil)))
+            (sem-rss--generate-file target "prompt" "Test" 1))
+          (with-temp-buffer
+            (insert-file-contents target)
+            (let ((content (buffer-string)))
+              ;; Trusted source link written verbatim (clickable)
+              (should (string-match-p "https://arxiv\\.org/abs/2406\\.15797"
+                                      content))
+              ;; Untrusted URL still defanged
+              (should (string-match-p "hxxps://example\\.com/page" content))
+              (should-not (string-match-p "https://example\\.com" content)))))
+      (when (file-exists-p target)
+        (delete-file target)))))
+
+(ert-deftest sem-rss-test-generate-file-base-domain-feed-preserves-links ()
+  "A feed at rss.arxiv.org whitelists arxiv.org paper links in the digest."
+  (let ((target (make-temp-file "sem-rss-basedomain-" nil ".org")))
+    (unwind-protect
+        (let ((elfeed-feeds '("https://rss.arxiv.org/rss/cs.DB")))
+          (cl-letf (((symbol-function 'sem-llm-request)
+                     (lambda (_prompt _system callback context &optional _tier)
+                       (funcall callback
+                                "Paper: https://arxiv.org/abs/2406.15797"
+                                nil context)
+                       nil))
+                    ((symbol-function 'sem-core-log)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'sem-core-log-error)
+                     (lambda (&rest _) nil)))
+            (sem-rss--generate-file target "prompt" "Arxiv Digest" 1))
+          (with-temp-buffer
+            (insert-file-contents target)
+            (let ((content (buffer-string)))
+              (should (string-match-p "https://arxiv\\.org/abs/2406\\.15797"
+                                      content))
+              (should-not (string-match-p "hxxps://arxiv" content)))))
+      (when (file-exists-p target)
+        (delete-file target)))))
+
+(ert-deftest sem-rss-test-generate-file-logs-trusted-host-count ()
+  "Digest generation logs the trusted-host count once per run."
+  (let ((target (make-temp-file "sem-rss-log-" nil ".org"))
+        (log-calls nil))
+    (unwind-protect
+        (let ((elfeed-feeds '("https://arxiv.org/rss/cs.LG"
+                              "https://rss.arxiv.org/rss/cs.DB"
+                              "http://example.org/feed.xml")))
+          (cl-letf (((symbol-function 'sem-llm-request)
+                     (lambda (_prompt _system callback context &optional _tier)
+                       (funcall callback "See https://arxiv.org/x" nil context)
+                       nil))
+                    ((symbol-function 'sem-core-log)
+                     (lambda (&rest args) (push args log-calls)))
+                    ((symbol-function 'sem-core-log-error)
+                     (lambda (&rest _) nil)))
+            (sem-rss--generate-file target "prompt" "Test" 1)
+            (let ((whitelist-log
+                   (seq-find (lambda (args)
+                               (and (stringp (nth 3 args))
+                                    (string-match-p "trusted host" (nth 3 args))))
+                             log-calls)))
+              (should whitelist-log)
+              ;; 3 distinct hosts: arxiv.org, rss.arxiv.org, example.org
+              (should (string-match-p "3 trusted hosts"
+                                      (nth 3 whitelist-log)))
+              (should (equal (nth 0 whitelist-log) "rss"))
+              (should (equal (nth 2 whitelist-log) "OK")))))
       (when (file-exists-p target)
         (delete-file target)))))
 

@@ -98,7 +98,8 @@ Org-roam output should NOT call this function (policy check)."
 
 (ert-deftest sem-security-test-url-sanitization-backslash-adjacent ()
   "Test that a URL adjacent to a backslash does not crash and is sanitized.
-Reproduces the production failure where LaTeX like \\texttt follows a URL."
+Reproduces the production failure where LaTeX like \\texttt follows a URL.
+Also verifies the literal-replacement contract with a non-nil trusted set."
   (let ((text "https://example.com\\texttt{word}"))
     (let ((sanitized (sem-security-sanitize-urls text)))
       ;; Must not signal "Invalid use of \\ in replacement text"
@@ -106,7 +107,16 @@ Reproduces the production failure where LaTeX like \\texttt follows a URL."
       ;; URL portion is sanitized, LaTeX portion preserved verbatim
       (should (string-match-p "hxxps://example\\.com" sanitized))
       (should-not (string-match-p "https://example\\.com" sanitized))
-      (should (string-match-p "\\\\texttt{word}" sanitized)))))
+      (should (string-match-p "\\\\texttt{word}" sanitized)))
+    ;; With a non-nil trusted set the literal replacement must still hold:
+    ;; a trusted URL is preserved verbatim and backslashes do not crash.
+    (let ((sanitized (sem-security-sanitize-urls text '("example.com"))))
+      (should (string= "https://example.com\\texttt{word}" sanitized))
+      (should (string-match-p "\\\\texttt{word}" sanitized)))
+    ;; An untrusted URL adjacent to a backslash is still defanged safely.
+    (let ((sanitized (sem-security-sanitize-urls "https://example.org\\texttt{w}"
+                                                 '("example.com"))))
+      (should (string= "hxxps://example.org\\texttt{w}" sanitized)))))
 
 (ert-deftest sem-security-test-url-sanitization-stops-at-bracket ()
   "Test that URL matching stops at ] (Org-mode link delimiter)."
@@ -173,6 +183,58 @@ Input shape: [[https://arxiv.org/abs/2406.15797][$\\texttt{SynC}$: Title]]"
     (let ((sanitized (sem-security-sanitize-urls text)))
       (should (string= "See hxxps://example.com/page for info" sanitized))
       (should-not (string-match-p "https://" sanitized)))))
+
+;;; Tests for whitelist-aware (trusted-hosts) URL sanitization
+
+(ert-deftest sem-security-test-url-sanitization-trusted-url-preserved ()
+  "Test that a URL whose host matches a trusted host is preserved verbatim."
+  (let ((text "Read [[https://arxiv.org/abs/2406.15797][paper]]"))
+    (let ((sanitized (sem-security-sanitize-urls text '("arxiv.org"))))
+      (should (string= "Read [[https://arxiv.org/abs/2406.15797][paper]]"
+                       sanitized))
+      (should (string-match-p "https://arxiv" sanitized)))))
+
+(ert-deftest sem-security-test-url-sanitization-untrusted-url-defanged ()
+  "Test that untrusted URLs are still defanged when a trusted set is given."
+  (let ((text "See https://arxiv.org/abs/1 and https://example.com/page"))
+    (let ((sanitized (sem-security-sanitize-urls text '("arxiv.org"))))
+      (should (string-match-p "https://arxiv\\.org/abs/1" sanitized))
+      (should (string-match-p "hxxps://example\\.com/page" sanitized))
+      (should-not (string-match-p "https://example\\.com" sanitized)))))
+
+(ert-deftest sem-security-test-url-sanitization-trusted-host-case-insensitive ()
+  "Test that host comparison is case-insensitive on both sides."
+  (let ((text "Visit https://ARXIV.ORG/abs/2406.15797 and https://ArXiV.OrG/x"))
+    (let ((sanitized (sem-security-sanitize-urls text '("ArXiv.OrG"))))
+      (should (string= text sanitized)))))
+
+(ert-deftest sem-security-test-url-sanitization-base-domain-match ()
+  "Test that a link host sharing the feed host's base domain is trusted.
+A feed hosted at rss.arxiv.org must whitelist links to arxiv.org."
+  (let ((text "Paper: https://arxiv.org/abs/2406.15797"))
+    (let ((sanitized (sem-security-sanitize-urls text '("rss.arxiv.org"))))
+      (should (string= "Paper: https://arxiv.org/abs/2406.15797" sanitized)))))
+
+(ert-deftest sem-security-test-url-sanitization-base-domain-not-over-matched ()
+  "Test that base-domain matching does not trust look-alike hosts."
+  (let ((text "Beware https://notarxiv.org/abs/1"))
+    (let ((sanitized (sem-security-sanitize-urls text '("rss.arxiv.org"))))
+      (should (string-match-p "hxxps://notarxiv\\.org" sanitized)))))
+
+(ert-deftest sem-security-test-url-sanitization-nil-trusted-hosts-masks-all ()
+  "Test that omitting TRUSTED-HOSTS (or passing nil) masks every URL."
+  (let ((text "See https://arxiv.org/abs/2406.15797 and http://example.com")
+        (masked "See hxxps://arxiv.org/abs/2406.15797 and hxxp://example.com"))
+    (let ((sanitized (sem-security-sanitize-urls text)))
+      (should (string= masked sanitized)))
+    (let ((sanitized (sem-security-sanitize-urls text nil)))
+      (should (string= masked sanitized)))))
+
+(ert-deftest sem-security-test-url-sanitization-trusted-ignores-port-and-path ()
+  "Test that host matching considers only the host component."
+  (let ((text "See http://arxiv.org:8443/feed.xml"))
+    (let ((sanitized (sem-security-sanitize-urls text '("arxiv.org"))))
+      (should (string= "See http://arxiv.org:8443/feed.xml" sanitized)))))
 
 ;;; Tests for position-preserving round-trip
 
