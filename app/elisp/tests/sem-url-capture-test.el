@@ -378,5 +378,29 @@ and asserts the saved file contains the restored sensitive block text."
         (should-not captured-timeout-log)
         (should (string= captured-error "fetch failed"))))))
 
+
+(ert-deftest sem-url-capture-test-429-failure-kind-rate-limited ()
+  "Test that a 429 from the LLM layer surfaces as failure-kind rate-limited."
+  (let ((captured-failure-kind :unset))
+    (cl-letf (((symbol-function 'sem-url-capture--fetch-url)
+               (lambda (_url &optional _timeout)
+                 (list :content "Test article content")))
+              ((symbol-function 'sem-url-capture--get-umbrella-nodes)
+               (lambda () nil))
+              ((symbol-function 'sem-llm-request)
+               (lambda (_prompt _system callback context &optional _tier)
+                 (funcall callback
+                          nil
+                          (list :error (list :message "Provider returned error"
+                                             :code 429))
+                          context)
+                 nil)))
+      (sem-url-capture-process
+       "https://example.com/article"
+       (lambda (_filepath context)
+         (setq captured-failure-kind (plist-get context :failure-kind))))
+      (should (eq captured-failure-kind 'rate-limited)))))
+
+
 (provide 'sem-url-capture-test)
 ;;; sem-url-capture-test.el ends here

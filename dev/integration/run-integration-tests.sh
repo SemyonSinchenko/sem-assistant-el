@@ -43,7 +43,7 @@ LOCAL_GIT_SYNC_UNAVAILABLE_REMOTE="$TEST_DATA_DIR/local-git-sync-missing-origin.
 export WEBDAV_PORT=16065
 
 # Test-specific model name
-export OPENROUTER_MODEL="qwen/qwen3.5-35b-a3b"
+export OPENROUTER_MODEL="qwen/qwen3.8-flash"
 
 # Test-specific runtime timezone required by startup validation.
 export CLIENT_TIMEZONE="${CLIENT_TIMEZONE:-Etc/UTC}"
@@ -1684,7 +1684,7 @@ PY
         timezone_diag_file="$RUN_DIR/timezone-diagnostics.txt"
 
         local container_epoch observed_offset observed_zone localtime_link timezone_file_value tz_env_value cron_tz_line cron_job_tz_line expected_offset
-        container_epoch=$(podman-compose exec emacs sh -lc 'date +%s' 2>/dev/null | tr -d '\r' || true)
+        container_epoch=$(podman-compose exec emacs sh -lc 'date +%s' 2>/dev/null | tr -dc '0-9' || true)
         observed_offset=$(podman-compose exec emacs sh -lc 'date +%z' 2>/dev/null | tr -d '\r' || true)
         observed_zone=$(podman-compose exec emacs sh -lc 'date +%Z' 2>/dev/null | tr -d '\r' || true)
         localtime_link=$(podman-compose exec emacs sh -lc 'if command -v readlink >/dev/null 2>&1; then readlink /etc/localtime || true; else ls -l /etc/localtime || true; fi' 2>/dev/null | tr -d '\r' || true)

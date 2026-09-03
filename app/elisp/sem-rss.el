@@ -454,11 +454,15 @@ Returns immediately (async). The CALLBACK is invoked when complete."
                             (length trusted-hosts)))
       ;; Use sem-llm-request instead of direct gptel-request
       (require 'sem-llm)
-      (sem-llm-request prompt system-prompt
+      (cl-labels
+          ((run-attempt (attempt-number)
+             (sem-llm-request prompt system-prompt
                        (lambda (response info context)
                          "Callback for sem-llm-request in RSS digest.
-Handles API errors (RETRY) and malformed output (DLQ)."
-                         (let ((target (plist-get context :target-path))
+Handles rate-limit backoff retries, API errors (RETRY) and malformed
+output (DLQ)."
+                         (let ((deferred nil)
+                               (target (plist-get context :target-path))
                                (title (plist-get context :title-prefix))
                                (from (plist-get context :from-org))
                                (to (plist-get context :to-org))
@@ -482,7 +486,20 @@ Handles API errors (RETRY) and malformed output (DLQ)."
                                             (format "Digest written to %s" target)
                                             nil)
                               (setq success t))
-                            ;; API error - log RETRY, do not write file
+                            ;; Rate limited with budget remaining - retry
+                            ;; in-process after a backoff delay; the
+                            ;; completion callback fires on the terminal
+                            ;; outcome.
+                            ((and (plist-get info :error)
+                                  (sem-llm-rate-limit-p (plist-get info :error))
+                                  (< attempt-number 3))
+                             (let ((delay (sem-llm-rate-limit-retry-delay attempt-number)))
+                               (sem-core-log "rss" digest-type "RETRY"
+                                             (format "Rate limited (429), attempt %d/3 scheduled in %ds"
+                                                     attempt-number delay)
+                                             nil)
+                               (run-at-time delay nil (function run-attempt) (1+ attempt-number))
+                               (setq deferred t)))
                             ((plist-get info :error)
                              (sem-core-log-error "rss" digest-type
                                                  (format "API error: %s" (plist-get info :error))
@@ -503,10 +520,14 @@ Handles API errors (RETRY) and malformed output (DLQ)."
                              :from-org from-org :to-org to-org :prompt prompt
                              :digest-type digest-type
                              :trusted-hosts trusted-hosts)
-                       'medium)
+                       'medium)))
+        (run-attempt 1)
+    t)))
 
     ;; Return immediately - processing continues asynchronously
-    t))
+
+(provide 'sem-rss)
+;;; sem-rss.el ends here
 
 
 ;;; Cron Entry Point

@@ -66,7 +66,7 @@
     (unwind-protect
         (progn
           ;; Define a test callback
-          (let ((test-callback (lambda (response _info _context)
+          (let ((test-callback (lambda (response _info)
                                  (setq callback-called t)
                                  (setq callback-response response))))
             ;; Call the mock gptel-request directly (gptel is already stubbed in sem-mock)
@@ -92,7 +92,7 @@
     (unwind-protect
         (progn
           ;; Define a test callback
-          (let ((test-callback (lambda (_response info _context)
+          (let ((test-callback (lambda (_response info)
                                  (setq callback-called t)
                                  (setq callback-error (plist-get info :error)))))
             ;; Call the mock gptel-request directly (gptel is already stubbed in sem-mock)
@@ -189,6 +189,162 @@
        'weak)
       (should callback-called)
       (should (eq captured-model 'openrouter/weak)))))
+
+
+;;; Streaming normalization regression tests
+
+(ert-deftest sem-llm-test-streaming-chunks-delivered-once ()
+  "Test that streaming chunks accumulate and deliver exactly one full response."
+  (let ((calls nil))
+    (sem-mock-gptel-request-stream
+     (list (cons "partial one " (list :stream t))
+           (cons "partial two" (list :stream t))
+           (cons t (list :stream t :status "finished"))))
+    (setenv "OPENROUTER_MODEL" "test-model")
+    (unwind-protect
+        (progn
+          (sem-llm-request "p" "s" (lambda (response info context)
+                         (push (list response (plist-get info :error) context) calls)) :ctx 'weak)
+          (should (= (length calls) 1))
+          (should (string= (nth 0 (car calls)) "partial one partial two"))
+          (should (eq (nth 2 (car calls)) :ctx)))
+      (sem-mock-gptel-reset))))
+
+(ert-deftest sem-llm-test-streaming-reasoning-conses-withheld ()
+  "Test that reasoning conses are never delivered as response text."
+  (let ((calls nil))
+    (sem-mock-gptel-request-stream
+     (list (cons (cons 'reasoning "thinking...") (list :stream t))
+           (cons '(reasoning . t) (list :stream t))
+           (cons "final text" (list :stream t))
+           (cons t (list :stream t))))
+    (setenv "OPENROUTER_MODEL" "test-model")
+    (unwind-protect
+        (progn
+          (sem-llm-request "p" "s" (lambda (response info context)
+                         (push (list response (plist-get info :error) context) calls)) nil 'weak)
+          (should (= (length calls) 1))
+          (should (string= (nth 0 (car calls)) "final text")))
+      (sem-mock-gptel-reset))))
+
+(ert-deftest sem-llm-test-streaming-empty-stream-delivers-nil-once ()
+  "Test that a stream ending without content delivers nil exactly once."
+  (let ((calls nil))
+    (sem-mock-gptel-request-stream
+     (list (cons t (list :stream t))))
+    (setenv "OPENROUTER_MODEL" "test-model")
+    (unwind-protect
+        (progn
+          (sem-llm-request "p" "s" (lambda (response info context)
+                         (push (list response (plist-get info :error) context) calls)) nil 'weak)
+          (should (= (length calls) 1))
+          (should (null (nth 0 (car calls)))))
+      (sem-mock-gptel-reset))))
+
+(ert-deftest sem-llm-test-streaming-duplicate-sentinels-deliver-once ()
+  "Test the once-only delivery guard: terminal events after delivery are ignored."
+  (let ((calls nil))
+    (sem-mock-gptel-request-stream
+     (list (cons "text" (list :stream t))
+           (cons t (list :stream t))
+           (cons t (list :stream t))
+           (cons nil (list :stream t :error "late"))))
+    (setenv "OPENROUTER_MODEL" "test-model")
+    (unwind-protect
+        (progn
+          (sem-llm-request "p" "s" (lambda (response info context)
+                         (push (list response (plist-get info :error) context) calls)) nil 'weak)
+          (should (= (length calls) 1))
+          (should (string= (nth 0 (car calls)) "text")))
+      (sem-mock-gptel-reset))))
+
+(ert-deftest sem-llm-test-streaming-failure-preserves-cause ()
+  "Test that a failure sentinel delivers nil with the transport cause preserved."
+  (let ((calls nil)
+        (error-logs nil))
+    (sem-mock-gptel-request-stream
+     (list (cons "partial" (list :stream t))
+           (cons nil (list :stream t :error "Curl failed with exit code 18"))))
+    (setenv "OPENROUTER_MODEL" "test-model")
+    (unwind-protect
+        (cl-letf (((symbol-function 'sem-core-log-error)
+                   (lambda (_module _event msg &rest _)
+                     (push msg error-logs))))
+          (sem-llm-request "p" "s" (lambda (response info context)
+                         (push (list response (plist-get info :error) context) calls)) nil 'weak)
+          (should (= (length calls) 1))
+          (should (null (nth 0 (car calls))))
+          (should (string= (nth 1 (car calls)) "Curl failed with exit code 18"))
+          (should (= (length error-logs) 1))
+          (should (string-match-p "Curl failed with exit code 18" (car error-logs))))
+      (sem-mock-gptel-reset))))
+
+(ert-deftest sem-llm-test-caller-callback-error-caught ()
+  "Test that an error raised inside the caller callback is caught and logged."
+  (let ((propagated nil))
+    (sem-mock-gptel-request-success "Valid response")
+    (setenv "OPENROUTER_MODEL" "test-model")
+    (unwind-protect
+        (progn
+          (condition-case _err
+              (sem-llm-request "p" "s" (lambda (&rest _) (error "boom")) nil 'weak)
+            (error (setq propagated t)))
+          (should-not propagated))
+      (sem-mock-gptel-reset))))
+
+
+
+;;; Request watchdog timeout regression tests
+
+(ert-deftest sem-llm-test-request-timeout-delivers-once ()
+  "Test that a hung request delivers a timeout failure exactly once and
+a late response is discarded."
+  (let ((calls nil)
+        (watchdog nil)
+        (watchdog-delay nil)
+        (late-callback nil))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (delay _repeat fn &rest _)
+                 (setq watchdog fn watchdog-delay delay)
+                 'watchdog-timer))
+              ((symbol-function 'cancel-timer)
+               (lambda (_timer) nil))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest args)
+                 (setq late-callback (plist-get args :callback))
+                 nil)))
+      (unwind-protect
+          (progn
+            (setenv "OPENROUTER_MODEL" "test-model")
+            (setenv "SEM_LLM_REQUEST_TIMEOUT_SECONDS" "180")
+            (should (= (sem-llm-request-timeout-seconds) 180))
+            (sem-llm-request "p" "s"
+                             (lambda (response info _context)
+                               (push (list response (plist-get info :error)) calls))
+                             nil 'weak)
+            (should watchdog)
+            (should (= watchdog-delay 180))
+            (should (functionp late-callback))
+            ;; Watchdog fires: timeout failure delivered exactly once.
+            (funcall watchdog)
+            (should (= (length calls) 1))
+            (should (null (nth 0 (car calls))))
+            (should (string-match-p "timed out" (nth 1 (car calls))))
+            ;; Late real response after the timeout is discarded.
+            (funcall late-callback "late text" (list :status 200))
+            (should (= (length calls) 1)))
+        (setenv "SEM_LLM_REQUEST_TIMEOUT_SECONDS" nil)))))
+
+(ert-deftest sem-llm-test-request-timeout-configurable ()
+  "Test that SEM_LLM_REQUEST_TIMEOUT_SECONDS is honored at call time."
+  (let ((value nil))
+    (unwind-protect
+        (progn
+          (setenv "SEM_LLM_REQUEST_TIMEOUT_SECONDS" "90")
+          (setq value (sem-llm-request-timeout-seconds))
+          (should (= value 90)))
+      (setenv "SEM_LLM_REQUEST_TIMEOUT_SECONDS" nil))))
+
 
 (provide 'sem-llm-test)
 ;;; sem-llm-test.el ends here

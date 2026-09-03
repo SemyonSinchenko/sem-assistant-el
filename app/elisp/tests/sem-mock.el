@@ -54,6 +54,12 @@ It lacks :PROPERTIES: and #+title:."
 (defvar sem-mock-gptel-error nil
   "Error to simulate from mocked gptel-request.")
 
+(defvar sem-mock-gptel-stream-steps nil
+  "Scripted callback steps for the streaming gptel mock.
+Each step is a (RESPONSE . INFO) cons, e.g. partial string chunks,
+`\'(reasoning . TEXT)' conses, and the `t'/`nil' terminal sentinels,
+mirroring gptel's streaming callback contract.")
+
 (defun sem-mock-gptel-request-success (response)
   "Setup gptel-request mock to return RESPONSE on success."
   (setq sem-mock-gptel-response response)
@@ -66,24 +72,42 @@ It lacks :PROPERTIES: and #+title:."
   (setq sem-mock-gptel-error error-msg)
   (advice-add 'gptel-request :override #'sem-mock--gptel-request-mock))
 
+(defun sem-mock-gptel-request-stream (steps)
+  "Setup gptel-request mock to replay STEPS as streaming callback events.
+STEPS is a list of (RESPONSE . INFO) conses.  Each RESPONSE is delivered to
+the request callback in order, mirroring gptel's streaming contract:
+partial string chunks, `\'(reasoning . TEXT)' conses, and the `t'/`nil'
+terminal sentinels."
+  (setq sem-mock-gptel-response nil)
+  (setq sem-mock-gptel-error nil)
+  (setq sem-mock-gptel-stream-steps steps)
+  (advice-add 'gptel-request :override #'sem-mock--gptel-request-mock))
+
 (defun sem-mock--gptel-request-mock (prompt &rest args)
   "Mock implementation of gptel-request.
 Uses `sem-mock-gptel-response' and `sem-mock-gptel-error'.
 ARGS is a plist containing :callback, :system, :stream, etc."
   (let ((callback (plist-get args :callback)))
-    (if sem-mock-gptel-error
+    (if sem-mock-gptel-stream-steps
         (progn
-          (when callback
-            (funcall callback nil (list :error sem-mock-gptel-error) nil))
+          (dolist (step sem-mock-gptel-stream-steps)
+            (when callback
+              (funcall callback (car step) (cdr step))))
           nil)
-      (when callback
-        (funcall callback sem-mock-gptel-response (list :status "success") nil))
-      sem-mock-gptel-response)))
+      (if sem-mock-gptel-error
+          (progn
+            (when callback
+              (funcall callback nil (list :error sem-mock-gptel-error)))
+            nil)
+        (when callback
+          (funcall callback sem-mock-gptel-response (list :status "success")))
+        sem-mock-gptel-response))))
 
 (defun sem-mock-gptel-reset ()
   "Reset gptel mocks to original behavior."
   (setq sem-mock-gptel-response nil)
   (setq sem-mock-gptel-error nil)
+  (setq sem-mock-gptel-stream-steps nil)
   (when (advice-member-p #'sem-mock--gptel-request-mock 'gptel-request)
     (advice-remove 'gptel-request #'sem-mock--gptel-request-mock)))
 

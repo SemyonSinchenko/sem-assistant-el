@@ -2,38 +2,6 @@
 
 This capability defines the URL capture pipeline that fetches articles via trafilatura, generates org-roam nodes via LLM, and saves them to the org-roam directory.
 
-## ADDED Requirements
-
-### Requirement: URL sanitization not applied to org-roam output
-The system SHALL NOT apply URL sanitization (defanging) to url-capture org-roam output. org-roam requires real URLs for proper link resolution and backlink functionality. `sem-security-sanitize-urls` SHALL NOT be used on the generated org-roam node body or `#+ROAM_REFS` values, and persisted url-capture output SHALL retain canonical `http://` and `https://` forms.
-
-#### Scenario: Real URLs preserved in org-roam
-- **WHEN** url-capture writes an org-roam node to `/data/org-roam/`
-- **THEN** URLs remain in their original `http://` or `https://` format
-
-#### Scenario: URL sanitization excluded from url-capture
-- **WHEN** `sem-url-capture-process` generates org-roam output
-- **THEN** `sem-security-sanitize-urls` is NOT called on the output
-
-#### Scenario: Defanged forms are rejected in persisted url-capture output
-- **WHEN** url-capture output is validated before write
-- **THEN** persisted trusted URL fields do not contain `hxxp://` or `hxxps://` forms
-
-### Requirement: URL defanging contract is consistent across runtime and documentation
-The system SHALL define one authoritative URL-defanging contract and keep runtime behavior and repository documentation aligned with that contract for task output, RSS digest output, and url-capture output.
-
-#### Scenario: Tasks and RSS outputs use defanged URL representation
-- **WHEN** task or RSS artifacts are produced for operator-facing text output
-- **THEN** URLs follow the documented defanging rules for those output types
-
-#### Scenario: url-capture output remains canonical
-- **WHEN** org-roam url-capture artifacts are produced
-- **THEN** URLs remain canonical and are not defanged
-
-#### Scenario: Documentation states output-specific URL behavior
-- **WHEN** operators consult repository documentation for URL handling
-- **THEN** documentation explicitly distinguishes defanged outputs from canonical url-capture outputs
-
 ## Requirements
 
 ### Requirement: url-capture pipeline triggered by inbox-processing
@@ -90,6 +58,10 @@ The system SHALL handle trafilatura failures (non-zero exit code, empty content)
 
 ### Requirement: Content truncation limit configured via env var
 The system SHALL read `URL_CAPTURE_MAX_CHARS` from the environment to determine the maximum character count for sanitized article content passed to the LLM. The default value SHALL be `200000` if unset. This is a separate variable from `RSS_MAX_INPUT_CHARS` and SHALL NOT be shared.
+
+#### Scenario: Oversized content truncated before the LLM call
+- **WHEN** sanitized article content exceeds the configured maximum character count
+- **THEN** it is truncated to that limit before being passed to the LLM
 
 ### Requirement: Content sanitized for token efficiency
 The system SHALL sanitize fetched content before sending to the LLM. Sanitization SHALL remove digit-only lines, single-character lines, collapse excessive whitespace, and truncate to the configured maximum (`URL_CAPTURE_MAX_CHARS` or default).
@@ -269,3 +241,53 @@ The system SHALL write DLQ-escalated headlines to `/data/errors.org` and log to 
 - **WHEN** a headline reaches 3 URL capture failures
 - **THEN** the headline is appended to `/data/errors.org`
 - **AND** an entry is written to `sem-log.org` with status DLQ
+
+### Requirement: URL sanitization not applied to org-roam output
+The system SHALL NOT apply URL sanitization (defanging) to url-capture org-roam output. org-roam requires real URLs for proper link resolution and backlink functionality. `sem-security-sanitize-urls` SHALL NOT be used on the generated org-roam node body or `#+ROAM_REFS` values, and persisted url-capture output SHALL retain canonical `http://` and `https://` forms.
+
+#### Scenario: Real URLs preserved in org-roam
+- **WHEN** url-capture writes an org-roam node to `/data/org-roam/`
+- **THEN** URLs remain in their original `http://` or `https://` format
+
+#### Scenario: URL sanitization excluded from url-capture
+- **WHEN** `sem-url-capture-process` generates org-roam output
+- **THEN** `sem-security-sanitize-urls` is NOT called on the output
+
+#### Scenario: Defanged forms are rejected in persisted url-capture output
+- **WHEN** url-capture output is validated before write
+- **THEN** persisted trusted URL fields do not contain `hxxp://` or `hxxps://` forms
+
+### Requirement: URL defanging contract is consistent across runtime and documentation
+The system SHALL define one authoritative URL-defanging contract and keep runtime behavior and repository documentation aligned with that contract for task output, RSS digest output, and url-capture output.
+
+#### Scenario: Tasks and RSS outputs use defanged URL representation
+- **WHEN** task or RSS artifacts are produced for operator-facing text output
+- **THEN** URLs follow the documented defanging rules for those output types
+
+#### Scenario: url-capture output remains canonical
+- **WHEN** org-roam url-capture artifacts are produced
+- **THEN** URLs remain canonical and are not defanged
+
+#### Scenario: Documentation states output-specific URL behavior
+- **WHEN** operators consult repository documentation for URL handling
+- **THEN** documentation explicitly distinguishes defanged outputs from canonical url-capture outputs
+
+### Requirement: Rate-limited URL captures retry in-process with backoff
+When the LLM layer reports a transient rate limit (HTTP 429) for a URL-capture
+request and retry budget remains, the pipeline SHALL reschedule the capture
+in-process after a backoff delay (same schedule as task retries: base
+`SEM_TASK_RATE_LIMIT_RETRY_DELAY`, default 20 seconds, doubling per attempt,
+capped at 300 seconds) instead of failing immediately. The completion callback
+SHALL fire only on the terminal outcome, so batch accounting is unchanged.
+Captures whose retry budget is exhausted SHALL route to DLQ as before.
+
+#### Scenario: 429 with retry budget remaining
+- **WHEN** a URL-capture LLM request fails with a 429 rate-limit error and
+  fewer than the maximum retries have been used
+- **THEN** the capture is rescheduled in-process after the computed backoff delay
+- **AND** the completion callback has not fired yet
+
+#### Scenario: 429 with retry budget exhausted
+- **WHEN** a URL-capture LLM request fails with 429 and the maximum retries are
+  exhausted
+- **THEN** the capture is routed to DLQ as before

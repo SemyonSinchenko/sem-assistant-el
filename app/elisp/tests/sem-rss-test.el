@@ -566,5 +566,54 @@ Returns a plist with :source, :archive and :state for teardown."
                                   (sem-rss-test--file-contents sem-core-errors-file))))
       (sem-rss-test--teardown-archive-env env))))
 
+(ert-deftest sem-rss-test-generate-file-429-retries-in-process ()
+  "Test that a 429 failure is retried in-process with backoff and the
+digest is written when a retried attempt succeeds."
+  (let ((target (make-temp-file "sem-rss-429-" nil ".org"))
+        (calls 0)
+        (scheduled nil)
+        (cb-result :unset))
+    (unwind-protect
+        (progn
+          (let ((elfeed-feeds nil))
+            (cl-letf (((symbol-function 'run-at-time)
+                       (lambda (delay _repeat fn &rest args)
+                         (setq scheduled (list delay fn args))))
+                      ((symbol-function 'sem-llm-request)
+                       (lambda (_prompt _system callback context &optional _tier)
+                         (cl-incf calls)
+                         (if (= calls 1)
+                             (funcall callback nil
+                                      (list :error (list :message "Provider returned error"
+                                                         :code 429))
+                                      context)
+                           (funcall callback
+                                    "Link: https://example.com"
+                                    nil
+                                    context)
+                           nil)))
+                      ((symbol-function 'sem-core-log)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'sem-core-log-error)
+                       (lambda (&rest _) nil)))
+              (sem-rss--generate-file
+               target "prompt" "Test" 1
+               (lambda (success _context) (setq cb-result success)))
+              ;; First attempt: rate-limited, retry scheduled, callback deferred.
+              (should (= calls 1))
+              (should scheduled)
+              (should (= (nth 0 scheduled) 20))
+              (should (null cb-result))
+              ;; Retry fires: second attempt succeeds.
+              (apply (nth 1 scheduled) (nth 2 scheduled))
+              (should (= calls 2))
+              (should (eq cb-result t))
+              (should (file-exists-p target))
+              (with-temp-buffer
+                (insert-file-contents target)
+                (should (string-match-p "hxxps://example\\.com" (buffer-string)))))))
+      (when (file-exists-p target)
+        (delete-file target)))))
+
 (provide 'sem-rss-test)
 ;;; sem-rss-test.el ends here

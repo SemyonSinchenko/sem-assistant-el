@@ -1495,5 +1495,254 @@ Empty body is valid for zero-body headlines."
         (should (plist-get result :failed))
         (should-not append-called)))))
 
+
+;;; Streaming pipeline regression test
+
+(ert-deftest sem-router-test-task-streaming-chunks-no-premature-retry ()
+  "Test streamed chunks deliver one complete response with no premature retry.
+Partial chunks must not trigger validation failures, retries, or DLQ;
+only the final accumulated response reaches the task pipeline."
+  (let ((downstream-calls 0)
+        (downstream-success :unset)
+        (retry-calls 0)
+        (test-tasks-file (make-temp-file "tasks-stream-")))
+    (unwind-protect
+        (let ((sem-router-tasks-file test-tasks-file)
+              (sem-core-cursor-file (make-temp-file "cursor-stream-"))
+              (sem-core--batch-id 11))
+          (cl-letf (((symbol-function 'org-id-new)
+                     (lambda (&optional _) "550e8400-e29b-41d4-a716-446655440000"))
+                    ((symbol-function 'getenv)
+                     (lambda (name)
+                       (cond
+                        ((string= name "OPENROUTER_MODEL") "test/medium")
+                        ((string= name "SEM_TASK_API_MAX_RETRIES") "3")
+                        ((string= name "CLIENT_TIMEZONE") "Etc/UTC")
+                        (t nil))))
+                    ((symbol-function 'sem-core--increment-retry)
+                     (lambda (_hash) (setq retry-calls (1+ retry-calls)) 1))
+                    ((symbol-function 'sem-core-log)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'sem-core-log-error)
+                     (lambda (&rest _) nil)))
+            (sem-mock-gptel-request-stream
+             (list (cons "* TODO Follow up about the authentication"
+                         (list :stream t))
+                   (cons " module\n:PROPERTIES:\n:ID: 550e8400-e29b-41d4-a716-446655440000\n:FILETAGS: :work:\n:END:\nReview the pull request."
+                         (list :stream t))
+                   (cons t (list :stream t))))
+            (sem-router--route-to-task-llm
+             '(:title "Review pull request #452 for authentication module"
+                      :tags ("task")
+                      :body nil
+                      :hash "streaming-task-hash")
+             (lambda (success _context)
+               (setq downstream-calls (1+ downstream-calls))
+               (setq downstream-success success)))
+            (should (= downstream-calls 1))
+            (should (eq downstream-success t))
+            (should (= retry-calls 0))
+            (should (file-exists-p test-tasks-file))))
+      (when (file-exists-p test-tasks-file)
+        (sem-mock-cleanup-temp-file test-tasks-file)))))
+
+
+(ert-deftest sem-router-test-task-api-error-with-security-blocks-still-retries ()
+  "Test that a failed LLM response for a task with security blocks takes the
+retry path instead of crashing on detokenize-of-nil (regression: the old code
+called sem-security-restore-from-llm unconditionally, signaling
+wrong-type-argument arrayp on nil responses and skipping the retry branch)."
+  (let ((callback-success :unset)
+        (increment-calls 0)
+        (sem-core--batch-id 7))
+    (cl-letf (((symbol-function 'org-id-new)
+               (lambda (&optional _) "550e8400-e29b-41d4-a716-446655440000"))
+              ((symbol-function 'getenv)
+               (lambda (name)
+                 (cond
+                  ((string= name "OPENROUTER_MODEL") "test/medium")
+                  ((string= name "SEM_TASK_API_MAX_RETRIES") "3")
+                  ((string= name "CLIENT_TIMEZONE") "Etc/UTC")
+                  (t nil))))
+              ((symbol-function 'sem-llm-request)
+               (lambda (_prompt _system callback context &optional _tier)
+                 (funcall callback nil (list :error "provider timeout") context)
+                 nil))
+              ((symbol-function 'sem-core--increment-retry)
+               (lambda (_hash) (setq increment-calls (1+ increment-calls)) 1))
+              ((symbol-function 'sem-core-log)
+               (lambda (&rest _) nil))
+              ((symbol-function 'sem-core-log-error)
+               (lambda (&rest _) nil)))
+      (sem-router--route-to-task-llm
+       '(:title "Update password manager"
+         :tags ("task")
+         :body "Contact the bookkeeper.\n#+begin_sensitive\nsupersecret123\n#+end_sensitive\nand sent the pdf."
+         :hash "sensitive-error-hash")
+       (lambda (success _context)
+         (setq callback-success success)))
+      (should (= increment-calls 1))
+      (should (eq callback-success nil)))))
+
+
+;;; Rate-limit (429) handling regression tests
+
+(ert-deftest sem-router-test-rate-limit-detector ()
+  "Test 429 detection across gptel plist and string error shapes."
+  (should (sem-router--rate-limit-p
+           (list :message "Provider returned error" :code 429)))
+  (should-not (sem-router--rate-limit-p
+               (list :message "Provider returned error" :code 500)))
+  (should (sem-router--rate-limit-p
+           "Provider returned error :code 429"))
+  (should (sem-router--rate-limit-p "temporarily rate-limited upstream"))
+  (should-not (sem-router--rate-limit-p "Curl failed with exit code 18"))
+  (should-not (sem-router--rate-limit-p nil)))
+
+(ert-deftest sem-router-test-rate-limit-delay-backoff ()
+  "Test exponential backoff delays with configurable base."
+  (cl-letf (((symbol-function 'getenv)
+             (lambda (name)
+               (when (string= name "SEM_TASK_RATE_LIMIT_RETRY_DELAY") "20"))))
+    (should (= (sem-router--rate-limit-retry-delay 1) 20))
+    (should (= (sem-router--rate-limit-retry-delay 2) 40))
+    (should (= (sem-router--rate-limit-retry-delay 3) 80)))
+  (cl-letf (((symbol-function 'getenv) (lambda (_name) nil)))
+    (should (= (sem-router--rate-limit-retry-delay 1) 20))))
+
+(ert-deftest sem-router-test-task-429-schedules-in-process-retry ()
+  "Test a 429 failure defers the downstream callback and schedules a retry.
+The retried attempt runs in-process; when it succeeds the callback fires
+with success and the task is written."
+  (let ((downstream nil)
+        (scheduled nil)
+        (llm-calls 0)
+        (test-tasks-file (make-temp-file "tasks-429-")))
+    (unwind-protect
+        (let ((sem-router-tasks-file test-tasks-file)
+              (sem-core-cursor-file (make-temp-file "cursor-429-"))
+              (sem-core--batch-id 21)
+              (retry-count 0))
+          (cl-letf (((symbol-function 'org-id-new)
+                     (lambda (&optional _) "550e8400-e29b-41d4-a716-446655440000"))
+                    ((symbol-function 'getenv)
+                     (lambda (name)
+                       (cond
+                        ((string= name "OPENROUTER_MODEL") "test/medium")
+                        ((string= name "SEM_TASK_API_MAX_RETRIES") "3")
+                        ((string= name "SEM_TASK_RATE_LIMIT_RETRY_DELAY") "20")
+                        ((string= name "CLIENT_TIMEZONE") "Etc/UTC")
+                        (t nil))))
+                    ((symbol-function 'run-at-time)
+                     (lambda (delay _repeat fn &rest args)
+                       (setq scheduled (list delay fn args))))
+                    ((symbol-function 'sem-core--increment-retry)
+                     (lambda (_hash) (cl-incf retry-count)))
+                    ((symbol-function 'sem-core-log)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'sem-core-log-error)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'sem-llm-request)
+                     (lambda (_prompt _system callback context &optional _tier)
+                       (cl-incf llm-calls)
+                       (if (= llm-calls 1)
+                           ;; First attempt: upstream rate limit (429).
+                           (funcall callback
+                                    nil
+                                    (list :error (list :message "Provider returned error"
+                                                       :code 429))
+                                    context)
+                         ;; Retried attempt: valid task output.
+                         (funcall callback
+                                  "* TODO Follow up about the authentication module\n:PROPERTIES:\n:ID: 550e8400-e29b-41d4-a716-446655440000\n:FILETAGS: :work:\n:END:\nReview the pull request."
+                                  (list :status "finished")
+                                  context)
+                         t))))
+            (sem-router--route-to-task-llm
+             '(:title "Review pull request #452 for authentication module"
+                      :tags ("task")
+                      :body nil
+                      :hash "rate-limit-hash")
+             (lambda (success _context)
+               (setq downstream (cons success downstream))))
+            ;; First attempt: no downstream call, retry scheduled.
+            (should (null downstream))
+            (should (= llm-calls 1))
+            (should (= retry-count 1))
+            (should scheduled)
+            (should (= (nth 0 scheduled) 20))
+            (should (eq (nth 1 scheduled) #'sem-router--route-to-task-llm))
+            ;; Simulate the timer firing: retried attempt succeeds.
+            (apply (nth 1 scheduled) (nth 2 scheduled))
+            (should (= llm-calls 2))
+            (should (= (length downstream) 1))
+            (should (eq (car downstream) t))
+            (should (file-exists-p test-tasks-file))))
+      (when (file-exists-p test-tasks-file)
+        (sem-mock-cleanup-temp-file test-tasks-file)))))
+
+(ert-deftest sem-router-test-task-429-exhausted-goes-to-dlq ()
+  "Test that an exhausted rate-limited task reaches DLQ and fires the callback."
+  (let ((downstream nil)
+        (scheduled nil)
+        (dlq-marks 0)
+        (sem-core--batch-id 22))
+    (cl-letf (((symbol-function 'org-id-new)
+               (lambda (&optional _) "550e8400-e29b-41d4-a716-446655440000"))
+              ((symbol-function 'getenv)
+               (lambda (name)
+                 (cond
+                  ((string= name "OPENROUTER_MODEL") "test/medium")
+                  ((string= name "SEM_TASK_API_MAX_RETRIES") "3")
+                  ((string= name "CLIENT_TIMEZONE") "Etc/UTC")
+                  (t nil))))
+              ((symbol-function 'run-at-time)
+               (lambda (&rest _)
+                 (setq scheduled t)))
+              ((symbol-function 'sem-core--increment-retry)
+               (lambda (_hash) 3))
+              ((symbol-function 'sem-core--mark-dlq)
+               (lambda (_hash) (cl-incf dlq-marks)))
+              ((symbol-function 'sem-core-log)
+               (lambda (&rest _) nil))
+              ((symbol-function 'sem-core-log-error)
+               (lambda (&rest _) nil))
+              ((symbol-function 'sem-llm-request)
+               (lambda (_prompt _system callback context &optional _tier)
+                 (funcall callback
+                          nil
+                          (list :error (list :message "Provider returned error"
+                                             :code 429))
+                          context)
+                 nil)))
+      (sem-router--route-to-task-llm
+       '(:title "Process quarterly financial reports"
+                :tags ("task")
+                :body nil
+                :hash "rate-limit-dlq-hash")
+       (lambda (success _context)
+         (setq downstream (cons success downstream))))
+      (should (= dlq-marks 1))
+      (should-not scheduled)
+      (should (= (length downstream) 1))
+      (should (eq (car downstream) t)))))
+
+
+;;; Dispatch stagger regression tests
+
+(ert-deftest sem-router-test-task-dispatch-stagger-delays ()
+  "Test stagger delays: first dispatch immediate, linear growth, capped."
+  (cl-letf (((symbol-function 'getenv)
+             (lambda (name)
+               (when (string= name "SEM_TASK_DISPATCH_STAGGER_SECONDS") "2"))))
+    (should (= (sem-router--task-dispatch-delay 1) 0))
+    (should (= (sem-router--task-dispatch-delay 2) 2))
+    (should (= (sem-router--task-dispatch-delay 11) 20))
+    (should (= (sem-router--task-dispatch-delay 40) 30)))
+  (cl-letf (((symbol-function 'getenv) (lambda (_name) "0")))
+    ;; Non-positive base disables staggering.
+    (should (= (sem-router--task-dispatch-delay 5) 0))))
+
+
 (provide 'sem-router-test)
 ;;; sem-router-test.el ends here

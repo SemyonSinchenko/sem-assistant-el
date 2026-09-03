@@ -502,15 +502,22 @@ Calls sem-url-capture--validate-and-save with restored sensitive content."
                                               (when filepath
                                                 (setq context (plist-put context :security-blocks nil))))
                                           (progn
-                                            (if (sem-url-capture--timeout-error-p error-value)
-                                                (progn
-                                                  (sem-url-capture--log-timeout-fail url "llm")
-                                                  (setq context (plist-put context :failure-kind 'timeout)))
+                                            (cond
+                                             ((sem-url-capture--timeout-error-p error-value)
+                                              (sem-url-capture--log-timeout-fail url "llm")
+                                              (setq context (plist-put context :failure-kind 'timeout)))
+                                             ((sem-llm-rate-limit-p error-value)
+                                              ;; Transient upstream rate limit: the
+                                              ;; llm module already logged the cause;
+                                              ;; the router schedules an in-process
+                                              ;; backoff retry.
+                                              (setq context (plist-put context :failure-kind 'rate-limited)))
+                                             (t
                                               (sem-core-log-error "url-capture" "URL-CAPTURE"
                                                                   (format "LLM request failed: %s"
                                                                           error-value)
                                                                   url
-                                                                  response))
+                                                                  response)))
                                             (setq filepath nil)))
                                         ;; Call the completion callback if provided
                                         (when callback
