@@ -8,6 +8,7 @@
 
 (require 'ert)
 (require 'cl-lib)
+(require 'sem-mock)
 
 ;; Set prompts directory before loading sem-rss so tests can find prompt files
 ;; Test file is at app/elisp/tests/sem-rss-test.el, prompts at data/prompts/
@@ -614,6 +615,55 @@ digest is written when a retried attempt succeeds."
                 (should (string-match-p "hxxps://example\\.com" (buffer-string)))))))
       (when (file-exists-p target)
         (delete-file target)))))
+
+;;; Test sem-rss-generate-morning-digest entry point
+
+(ert-deftest sem-rss-test-morning-digest-success-completes-and-logs ()
+  "Test the cron entry point completes normally with no feed entries.
+Regression test: a misplaced closing paren detached the `error'
+handler from the `condition-case', so the stray `(error ...)' form
+ran after the body and signaled void-variable `err' on every call,
+while the completion log line never fired."
+  (let ((elfeed-dir (make-temp-file "sem-rss-test-elfeed-" t))
+        (llm-called nil))
+    (unwind-protect
+        (let ((state (sem-mock-setup-test-data-paths)))
+          (unwind-protect
+              (let ((elfeed-db-directory elfeed-dir))
+                (cl-letf (((symbol-function 'sem-llm-request)
+                           (lambda (&rest _)
+                             (setq llm-called t)
+                             nil)))
+                  ;; With an empty elfeed DB both digests SKIP and no
+                  ;; LLM call happens; the function must not signal.
+                  (sem-rss-generate-morning-digest))
+                (should-not llm-called)
+                (with-temp-buffer
+                  (insert-file-contents sem-core-log-file)
+                  (should (string-match-p "Morning digest generation completed"
+                                          (buffer-string)))))
+            (sem-mock-teardown-test-data-paths state)))
+      (delete-directory elfeed-dir t))))
+
+(ert-deftest sem-rss-test-morning-digest-inner-error-logged-not-raised ()
+  "Test that an inner failure is caught by the condition-case handler.
+The daemon must never crash: the failure is written to the errors
+file and the entry point returns instead of signaling."
+  (let ((state (sem-mock-setup-test-data-paths)))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'sem-rss--ensure-prompts-loaded)
+                     (lambda () (error "boom"))))
+            ;; Must not signal: the handler binds and uses `err'.
+            (sem-rss-generate-morning-digest))
+          (should (file-exists-p sem-core-errors-file))
+          (with-temp-buffer
+            (insert-file-contents sem-core-errors-file)
+            (should (string-match-p
+                     (regexp-quote "[rss] [RSS-DIGEST] FAIL")
+                     (buffer-string)))
+            (should (string-match-p "boom" (buffer-string)))))
+      (sem-mock-teardown-test-data-paths state))))
 
 (provide 'sem-rss-test)
 ;;; sem-rss-test.el ends here

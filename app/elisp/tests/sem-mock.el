@@ -189,8 +189,9 @@ Returns the file path. Caller is responsible for cleanup."
     (delete-file file)))
 
 (defun sem-mock-setup-test-data-paths ()
-  "Redirect core runtime file paths to a temporary test directory.
-Returns a plist snapshot used by `sem-mock-teardown-test-data-paths'."
+  "Redirect core and RSS runtime file paths to a temporary directory.
+Returns a plist snapshot used by `sem-mock-teardown-test-data-paths'.
+Tests must never write to the real /data volume used by the daemon."
   (let* ((dir (make-temp-file "sem-test-data-" t))
          (tracked-vars
           '(sem-core-log-file
@@ -198,7 +199,11 @@ Returns a plist snapshot used by `sem-mock-teardown-test-data-paths'."
             sem-core-cursor-file
             sem-core-retries-file
             sem-core-inbox-file
-            sem-core-cron-guard-dir))
+            sem-core-cron-guard-dir
+            sem-rss-dir
+            sem-rss-archive-dir
+            sem-rss-feeds-file
+            sem-rss-feeds-cache-file))
          (snapshot
           (mapcar (lambda (sym)
                     (cons sym (if (boundp sym) (symbol-value sym) :unbound)))
@@ -209,6 +214,10 @@ Returns a plist snapshot used by `sem-mock-teardown-test-data-paths'."
     (setq sem-core-retries-file (expand-file-name ".sem-retries.el" dir))
     (setq sem-core-inbox-file (expand-file-name "inbox-mobile.org" dir))
     (setq sem-core-cron-guard-dir (expand-file-name "cron-guards" dir))
+    (setq sem-rss-dir (expand-file-name "rss" dir))
+    (setq sem-rss-archive-dir (expand-file-name "rss-archive" dir))
+    (setq sem-rss-feeds-file (expand-file-name "feeds.org" dir))
+    (setq sem-rss-feeds-cache-file (expand-file-name ".sem-feeds-cache.el" dir))
     (list :dir dir :snapshot snapshot)))
 
 (defun sem-mock-teardown-test-data-paths (state)

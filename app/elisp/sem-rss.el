@@ -543,51 +543,51 @@ This is the cron entry point callable via `emacsclient -e`."
          (progn
            (sem-core-log "rss" "RSS-DIGEST" "OK" "Morning digest generation started")
 
-        ;; Ensure prompt templates are loaded (lazy loading)
-        (sem-rss--ensure-prompts-loaded)
+           ;; Ensure prompt templates are loaded (lazy loading)
+           (sem-rss--ensure-prompts-loaded)
 
-        ;; Ensure output directory exists
-        (make-directory sem-rss-dir t)
+           ;; Ensure output directory exists
+           (make-directory sem-rss-dir t)
 
-         ;; Generate filenames
-         (let* ((date-str (sem-time-format-string "%Y-%m-%d"))
-                (general-file (expand-file-name (concat date-str ".org") sem-rss-dir))
-                (arxiv-file (expand-file-name (concat date-str "-arxiv.org") sem-rss-dir))
-                (days 1))  ; Always 24-hour lookback
+           ;; Generate filenames
+           (let* ((date-str (sem-time-format-string "%Y-%m-%d"))
+                  (general-file (expand-file-name (concat date-str ".org") sem-rss-dir))
+                  (arxiv-file (expand-file-name (concat date-str "-arxiv.org") sem-rss-dir))
+                  (days 1))  ; Always 24-hour lookback
 
-          ;; Check if files already exist
-          (if (file-exists-p general-file)
-              (sem-core-log "rss" "RSS-DIGEST" "SKIP" "General digest already exists")
-            ;; Generate general digest
-            (let ((entries (sem-rss-collect-entries
-                            (lambda (tags) (not (member "arxiv" tags)))
-                            days)))
-              (if (null entries)
-                  (sem-core-log "rss" "RSS-DIGEST" "SKIP" "No entries found for general filter")
-                (sem-core-log "rss" "RSS-DIGEST" "OK"
-                              (format "Found %d entries for general digest" (length entries))
-                              nil)
-                (sem-rss--generate-file general-file
-                                        (sem-rss--build-general-prompt entries days)
-                                        "Daily Digest"
-                                        days))))
+             ;; Check if files already exist
+             (if (file-exists-p general-file)
+		 (sem-core-log "rss" "RSS-DIGEST" "SKIP" "General digest already exists")
+               ;; Generate general digest
+               (let ((entries (sem-rss-collect-entries
+                               (lambda (tags) (not (member "arxiv" tags)))
+                               days)))
+		 (if (null entries)
+                     (sem-core-log "rss" "RSS-DIGEST" "SKIP" "No entries found for general filter")
+                   (sem-core-log "rss" "RSS-DIGEST" "OK"
+				 (format "Found %d entries for general digest" (length entries))
+				 nil)
+                   (sem-rss--generate-file general-file
+                                           (sem-rss--build-general-prompt entries days)
+                                           "Daily Digest"
+                                           days))))
 
-          ;; Check if arxiv file already exists
-          (if (file-exists-p arxiv-file)
-              (sem-core-log "rss" "ARXIV-DIGEST" "SKIP" "Arxiv digest already exists")
-            ;; Generate arxiv digest
-            (let ((entries (sem-rss-collect-entries
-                            (lambda (tags) (member "arxiv" tags))
-                            days)))
-              (if (null entries)
-                  (sem-core-log "rss" "ARXIV-DIGEST" "SKIP" "No entries found for arxiv filter")
-                (sem-core-log "rss" "ARXIV-DIGEST" "OK"
-                              (format "Found %d entries for arxiv digest" (length entries))
-                              nil)
-                (sem-rss--generate-file arxiv-file
-                                        (sem-rss--build-arxiv-prompt entries days)
-                                        "Arxiv Digest"
-                                        days))))))
+             ;; Check if arxiv file already exists
+             (if (file-exists-p arxiv-file)
+		 (sem-core-log "rss" "ARXIV-DIGEST" "SKIP" "Arxiv digest already exists")
+               ;; Generate arxiv digest
+               (let ((entries (sem-rss-collect-entries
+                               (lambda (tags) (member "arxiv" tags))
+                               days)))
+		 (if (null entries)
+                     (sem-core-log "rss" "ARXIV-DIGEST" "SKIP" "No entries found for arxiv filter")
+                   (sem-core-log "rss" "ARXIV-DIGEST" "OK"
+				 (format "Found %d entries for arxiv digest" (length entries))
+				 nil)
+                   (sem-rss--generate-file arxiv-file
+                                           (sem-rss--build-arxiv-prompt entries days)
+                                           "Arxiv Digest"
+                                           days)))))
 
            (sem-core-log "rss" "RSS-DIGEST" "OK" "Morning digest generation completed"))
        (error
@@ -595,7 +595,7 @@ This is the cron entry point callable via `emacsclient -e`."
                             (error-message-string err)
                             nil
                             nil)
-        (message "SEM: RSS digest error: %s" (error-message-string err))))))
+        (message "SEM: RSS digest error: %s" (error-message-string err)))))))
 
 ;;; Digest Archival
 
