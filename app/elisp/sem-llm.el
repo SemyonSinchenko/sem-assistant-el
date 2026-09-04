@@ -156,15 +156,17 @@ doubles with each attempt, capped at 300 seconds."
 
 (defun sem-llm-request-timeout-seconds ()
   "Return the per-request watchdog timeout in seconds.
-Reads `SEM_LLM_REQUEST_TIMEOUT_SECONDS' at call time; defaults to 180.
+Reads `SEM_LLM_REQUEST_TIMEOUT_SECONDS' at call time; defaults to 300.
 A request whose stream produces no callback event within this window is
-failed with a timeout cause so callers and batch accounting can proceed."
+failed with a timeout cause so callers and batch accounting can proceed.
+The watchdog is cancelled by the first streamed callback event, so this
+bounds time-to-first-token, not total generation time."
   (let* ((raw (getenv "SEM_LLM_REQUEST_TIMEOUT_SECONDS"))
          (parsed (and raw (string-match-p "^[0-9]+$" raw)
                       (string-to-number raw))))
     (if (and (integerp parsed) (> parsed 0))
         parsed
-      180)))
+      300)))
 
 (defun sem-llm-request (prompt system-prompt callback &optional context tier)
   "Request LLM with PROMPT and SYSTEM-PROMPT.

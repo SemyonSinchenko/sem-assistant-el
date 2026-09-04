@@ -93,7 +93,7 @@ partial text chunks, `(reasoning . TEXT)` reasoning conses, and the `t` success 
 
 
 ### Requirement: Per-request watchdog timeout
-The `sem-llm` module SHALL arm a per-request watchdog timer (default 180 seconds,
+The `sem-llm` module SHALL arm a per-request watchdog timer (default 300 seconds,
 configurable via `SEM_LLM_REQUEST_TIMEOUT_SECONDS`). If no callback event arrives
 within the window, the wrapper SHALL deliver a timeout failure to the caller exactly
 once. Any response arriving after the timeout SHALL be discarded, and successful

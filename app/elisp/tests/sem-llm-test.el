@@ -345,6 +345,19 @@ a late response is discarded."
           (should (= value 90)))
       (setenv "SEM_LLM_REQUEST_TIMEOUT_SECONDS" nil))))
 
+(ert-deftest sem-llm-test-request-timeout-default-300 ()
+  "Test that the watchdog defaults to 300 seconds when the env var is unset
+or holds an invalid value."
+  (unwind-protect
+      (progn
+        (setenv "SEM_LLM_REQUEST_TIMEOUT_SECONDS" nil)
+        (should (= (sem-llm-request-timeout-seconds) 300))
+        (setenv "SEM_LLM_REQUEST_TIMEOUT_SECONDS" "not-a-number")
+        (should (= (sem-llm-request-timeout-seconds) 300))
+        (setenv "SEM_LLM_REQUEST_TIMEOUT_SECONDS" "0")
+        (should (= (sem-llm-request-timeout-seconds) 300)))
+    (setenv "SEM_LLM_REQUEST_TIMEOUT_SECONDS" nil)))
+
 
 (provide 'sem-llm-test)
 ;;; sem-llm-test.el ends here
