@@ -300,6 +300,7 @@ This is a lazy-loading function to avoid blocking daemon startup."
     ("vendors" . "Vendors")
     ("opensource" . "Open Source")
     ("ai" . "Artificial Intelligence")
+    ("consciousness" . "AI Consciousness")
     ("nonengineering" . "Non Engineering"))
   "Mapping of Elfeed tags to Digest Sections (General).")
 

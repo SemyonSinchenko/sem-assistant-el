@@ -114,7 +114,8 @@
     (let ((prompt (sem-rss--build-general-prompt entries 1)))
       (should (string-match-p "Data Engineering" prompt))
       (should (string-match-p "Open Source" prompt))
-      (should (string-match-p "Artificial Intelligence" prompt)))))
+      (should (string-match-p "Artificial Intelligence" prompt))
+      (should (string-match-p "AI Consciousness" prompt)))))
 
 (ert-deftest sem-rss-test-build-arxiv-prompt-contains-categories ()
   "Test that arxiv prompt contains category mappings."
@@ -125,6 +126,34 @@
       (should (string-match-p "cs.DB" prompt))
       (should (string-match-p "cs.AI" prompt))
       (should (string-match-p "physics.soc-ph" prompt)))))
+
+;;; Tests for AI Consciousness category support
+
+(ert-deftest sem-rss-test-categories-include-consciousness ()
+  "Test that the general category mapping includes the consciousness tag."
+  (should (equal (assoc "consciousness" sem-rss-categories)
+                 '("consciousness" . "AI Consciousness"))))
+
+(defun sem-rss-test--general-prompt-example ()
+  "Return the contents of general-prompt.example.txt from the repo root."
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "../../../general-prompt.example.txt"
+                       (file-name-directory
+                        (or load-file-name buffer-file-name))))
+    (buffer-string)))
+
+(ert-deftest sem-rss-test-general-prompt-example-top10-rule ()
+  "Test that the example general prompt defines the Топ-10 category rule."
+  (let ((example (sem-rss-test--general-prompt-example)))
+    (should (string-match-p "Топ-10 категории" example))
+    (should (string-match-p "AI Consciousness" example))))
+
+(ert-deftest sem-rss-test-general-prompt-example-consciousness-exclusivity ()
+  "Test that the example general prompt keeps consciousness entries exclusive."
+  (let ((example (sem-rss-test--general-prompt-example)))
+    (should (string-match-p "consciousness" example))
+    (should (string-match-p "ONLY in the \"AI Consciousness\" category" example))))
 
 ;;; Test sem-rss-collect-entries per-feed cap
 
