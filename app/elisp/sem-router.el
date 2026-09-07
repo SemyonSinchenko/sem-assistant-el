@@ -438,6 +438,32 @@ batch-barrier accounting is unchanged."
                  (function sem-router--route-to-task-llm)
                  headline callback batch-id)))
 
+(defun sem-router--schedule-url-capture-retry (url callback batch-id hash retry-count)
+  "Schedule an in-process delayed retry for a rate-limited URL capture.
+
+URL CALLBACK and BATCH-ID describe the pending URL-capture dispatch,
+HASH the inbox headline hash, and RETRY-COUNT the retry accounting.
+The delay grows exponentially with RETRY-COUNT.  The downstream
+CALLBACK is not invoked here; it fires when the retried attempt
+reaches a terminal outcome, so batch-barrier accounting is unchanged."
+  (require 'sem-url-capture)
+  (let* ((delay (sem-router--rate-limit-retry-delay retry-count))
+         (max-retries (sem-router--task-api-max-retries)))
+    (sem-core-log "router" "URL-CAPTURE" "RETRY"
+                  (format "URL capture rate limited (429), attempt %d/%d scheduled in %ds: %s"
+                          retry-count max-retries delay url)
+                  nil)
+    (sem-router--runtime-message
+     "url-callback" "RETRY"
+     (append (sem-router--runtime-correlation-fields batch-id hash)
+             (list (cons "attempt" retry-count)
+                   (cons "max" max-retries)
+                   (cons "delay-seconds" delay)
+                   (cons "reason" "rate-limited"))))
+    (run-at-time delay nil
+                 (function sem-url-capture-process)
+                 url callback)))
+
 (defun sem-router--task-dispatch-delay (task-index)
   "Return the dispatch stagger delay in seconds for TASK-INDEX (1-based).
 Staggers concurrent task LLM dispatches across a batch so simultaneous

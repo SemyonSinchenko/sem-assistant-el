@@ -568,8 +568,9 @@ Returns a plist with :source, :archive and :state for teardown."
       (sem-rss-test--teardown-archive-env env))))
 
 (ert-deftest sem-rss-test-generate-file-429-retries-in-process ()
-  "Test that a 429 failure is retried in-process with backoff and the
-digest is written when a retried attempt succeeds."
+  "Test that a 429 failure is retried in-process with the fixed
+digest delay and the digest is written when a retried attempt
+succeeds."
   (let ((target (make-temp-file "sem-rss-429-" nil ".org"))
         (calls 0)
         (scheduled nil)
@@ -603,7 +604,8 @@ digest is written when a retried attempt succeeds."
               ;; First attempt: rate-limited, retry scheduled, callback deferred.
               (should (= calls 1))
               (should scheduled)
-              (should (= (nth 0 scheduled) 20))
+              (should (= (nth 0 scheduled)
+                         sem-rss-rate-limit-retry-delay-seconds))
               (should (null cb-result))
               ;; Retry fires: second attempt succeeds.
               (apply (nth 1 scheduled) (nth 2 scheduled))
@@ -615,6 +617,133 @@ digest is written when a retried attempt succeeds."
                 (should (string-match-p "hxxps://example\\.com" (buffer-string)))))))
       (when (file-exists-p target)
         (delete-file target)))))
+
+(ert-deftest sem-rss-test-generate-file-429-exhaustion-fails-after-four-attempts ()
+  "Test that persistent 429s exhaust the initial attempt plus three
+retries (four attempts in total), then log the failure exactly once,
+invoke the callback with nil, and write no file."
+  (let ((target (make-temp-file "sem-rss-429-max-" nil ".org"))
+        (calls 0)
+        (scheduled nil)
+        (retries 0)
+        (errors 0)
+        (prompts nil)
+        (cb-result :unset))
+    (unwind-protect
+        (progn
+          ;; make-temp-file creates the file; digest writing must create it.
+          (when (file-exists-p target) (delete-file target))
+          (let ((elfeed-feeds nil))
+            (cl-letf (((symbol-function 'run-at-time)
+                       (lambda (delay _repeat fn &rest args)
+                         (cl-incf retries)
+                         (setq scheduled
+                               (append scheduled (list (list delay fn args))))))
+                      ((symbol-function 'sem-llm-request)
+                       (lambda (prompt _system callback context &optional _tier)
+                         (cl-incf calls)
+                         (push prompt prompts)
+                         (funcall callback nil
+                                  (list :error (list :message "Provider returned error"
+                                                     :code 429))
+                                  context)))
+                      ((symbol-function 'sem-core-log)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'sem-core-log-error)
+                       (lambda (&rest _) (cl-incf errors))))
+              (sem-rss--generate-file
+               target "prompt" "Test" 1
+               (lambda (success _context) (setq cb-result success)))
+              ;; Walk the three scheduled retries.
+              (while scheduled
+                (let ((timer (pop scheduled)))
+                  (apply (nth 1 timer) (nth 2 timer))))
+              (should (= calls 4))
+              (should (= retries 3))
+              ;; Every attempt reuses the original prompt.
+              (should (equal prompts
+                             (list "prompt" "prompt" "prompt" "prompt")))
+              (should (= errors 1))
+              (should (null cb-result))
+              (should-not (file-exists-p target)))))
+      (when (file-exists-p target)
+        (delete-file target)))))
+
+(ert-deftest sem-rss-test-generate-file-non-429-error-no-retry ()
+  "Test that a non-rate-limit API error logs once, schedules no
+retry, and writes no file."
+  (let ((target (make-temp-file "sem-rss-apierr-" nil ".org"))
+        (calls 0)
+        (scheduled nil)
+        (errors 0)
+        (cb-result :unset))
+    (unwind-protect
+        (progn
+          ;; make-temp-file creates the file; digest writing must create it.
+          (when (file-exists-p target) (delete-file target))
+          (let ((elfeed-feeds nil))
+            (cl-letf (((symbol-function 'run-at-time)
+                       (lambda (delay _repeat fn &rest args)
+                         (setq scheduled
+                               (append scheduled (list (list delay fn args))))))
+                      ((symbol-function 'sem-llm-request)
+                       (lambda (_prompt _system callback context &optional _tier)
+                         (cl-incf calls)
+                         (funcall callback nil
+                                  (list :error (list :message "Provider returned error"
+                                                     :code 500))
+                                  context)))
+                      ((symbol-function 'sem-core-log)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'sem-core-log-error)
+                       (lambda (&rest _) (cl-incf errors))))
+              (sem-rss--generate-file
+               target "prompt" "Test" 1
+               (lambda (success _context) (setq cb-result success)))
+              (should (= calls 1))
+              (should-not scheduled)
+              (should (= errors 1))
+              (should (null cb-result))
+              (should-not (file-exists-p target)))))
+      (when (file-exists-p target)
+        (delete-file target)))))
+
+(ert-deftest sem-rss-test-generate-file-429-delay-is-fixed ()
+  "Test that consecutive 429s schedule the first, second, and third
+retries with the same fixed delay (no doubling)."
+  (let ((target (make-temp-file "sem-rss-429-fixed-" nil ".org"))
+        (calls 0)
+        (scheduled nil))
+    (unwind-protect
+        (progn
+          (let ((elfeed-feeds nil))
+            (cl-letf (((symbol-function 'run-at-time)
+                       (lambda (delay _repeat fn &rest args)
+                         (setq scheduled
+                               (append scheduled (list (list delay fn args))))))
+                      ((symbol-function 'sem-llm-request)
+                       (lambda (_prompt _system callback context &optional _tier)
+                         (cl-incf calls)
+                         (funcall callback nil
+                                  (list :error (list :message "Provider returned error"
+                                                     :code 429))
+                                  context)))
+                      ((symbol-function 'sem-core-log)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'sem-core-log-error)
+                       (lambda (&rest _) nil)))
+              (sem-rss--generate-file target "prompt" "Test" 1)
+              ;; Walk each retry while it is scheduled; every delay is
+              ;; the same fixed value.
+              (while scheduled
+                (let ((timer (pop scheduled)))
+                  (should (= (nth 0 timer)
+                             sem-rss-rate-limit-retry-delay-seconds))
+                  (apply (nth 1 timer) (nth 2 timer))))
+              (should (= calls 4))))
+      (when (file-exists-p target)
+        (delete-file target))))))
+
 
 ;;; Test sem-rss-generate-morning-digest entry point
 
@@ -663,6 +792,49 @@ file and the entry point returns instead of signaling."
                      (regexp-quote "[rss] [RSS-DIGEST] FAIL")
                      (buffer-string)))
             (should (string-match-p "boom" (buffer-string)))))
+      (sem-mock-teardown-test-data-paths state))))
+
+(ert-deftest sem-rss-test-morning-digest-staggers-arxiv ()
+  "The arXiv digest is deferred behind the general digest step.
+The generation is scheduled once with the hardcoded stagger delay
+and only dispatches its LLM request when the timer fires."
+  (let ((state (sem-mock-setup-test-data-paths))
+        (timers nil)
+        (llm-calls 0))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'run-at-time)
+                     (lambda (delay _repeat fn &rest args)
+                       (setq timers (append timers (list (list delay fn args))))))
+                    ((symbol-function 'sem-llm-request)
+                     (lambda (_prompt _system callback context &optional _tier)
+                       (cl-incf llm-calls)
+                       (funcall callback "Digest body: https://example.com" nil context)))
+                    ((symbol-function 'sem-rss-collect-entries)
+                     (lambda (filter _days)
+                       ;; Only the arXiv filter matches the "arxiv" tag;
+                       ;; the general filter rejects it.
+                       (if (funcall filter (list "arxiv"))
+                           (list (list :title "Paper one"
+                                       :link "https://arxiv.org/abs/1"
+                                       :tags (list "arxiv")
+                                       :content "Abstract."))
+                         nil))))
+            (sem-rss-generate-morning-digest)
+            ;; Exactly one deferred timer: the staggered arXiv digest.
+            (should (= (length timers) 1))
+            (should (= (nth 0 (car timers)) sem-rss-arxiv-stagger-seconds))
+            ;; The general digest was skipped, the arXiv LLM request has
+            ;; not been dispatched yet.
+            (should (= llm-calls 0))
+            ;; Firing the deferred timer performs the arXiv generation.
+            (let ((timer (car timers)))
+              (apply (nth 1 timer) (nth 2 timer)))
+            (should (= llm-calls 1))
+            (should (file-exists-p
+                     (expand-file-name
+                      (concat (sem-time-format-string "%Y-%m-%d") "-arxiv.org")
+                      sem-rss-dir)))))
       (sem-mock-teardown-test-data-paths state))))
 
 (provide 'sem-rss-test)

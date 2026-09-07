@@ -43,7 +43,7 @@ LOCAL_GIT_SYNC_UNAVAILABLE_REMOTE="$TEST_DATA_DIR/local-git-sync-missing-origin.
 export WEBDAV_PORT=16065
 
 # Test-specific model name
-export OPENROUTER_MODEL="qwen/qwen3.8-flash"
+export OPENROUTER_MODEL="qwen/qwen3.8-27b"
 
 # Test-specific runtime timezone required by startup validation.
 export CLIENT_TIMEZONE="${CLIENT_TIMEZONE:-Etc/UTC}"

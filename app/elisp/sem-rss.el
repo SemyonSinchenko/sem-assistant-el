@@ -35,6 +35,19 @@
       199000)
   "Maximum input characters for LLM. Read from RSS_MAX_INPUT_CHARS.")
 
+(defconst sem-rss-arxiv-stagger-seconds 5
+  "Seconds to wait before arXiv digest generation starts.
+Counted from the start of the general digest step, so the two
+digest LLM requests are not dispatched back-to-back.")
+
+(defconst sem-rss-rate-limit-retry-delay-seconds 300
+  "Fixed delay in seconds before each digest rate-limit (429) retry.")
+
+(defconst sem-rss-rate-limit-max-retries 3
+  "Maximum retries after the initial digest request fails with 429.
+The initial attempt plus this many retries bound the total number
+of attempts (4 with the default value).")
+
 (defconst sem-rss-dir "/data/morning-read/"
   "Directory where daily digests are stored.")
 
@@ -492,11 +505,14 @@ output (DLQ)."
                             ;; outcome.
                             ((and (plist-get info :error)
                                   (sem-llm-rate-limit-p (plist-get info :error))
-                                  (< attempt-number 3))
-                             (let ((delay (sem-llm-rate-limit-retry-delay attempt-number)))
+                                  (< attempt-number
+                                     (1+ sem-rss-rate-limit-max-retries)))
+                             (let ((delay sem-rss-rate-limit-retry-delay-seconds))
                                (sem-core-log "rss" digest-type "RETRY"
-                                             (format "Rate limited (429), attempt %d/3 scheduled in %ds"
-                                                     attempt-number delay)
+                                             (format "Rate limited (429), attempt %d/%d failed; retrying in %ds"
+                                                     attempt-number
+                                                     (1+ sem-rss-rate-limit-max-retries)
+                                                     delay)
                                              nil)
                                (run-at-time delay nil (function run-attempt) (1+ attempt-number))
                                (setq deferred t)))
@@ -572,22 +588,35 @@ This is the cron entry point callable via `emacsclient -e`."
                                            "Daily Digest"
                                            days))))
 
-             ;; Check if arxiv file already exists
-             (if (file-exists-p arxiv-file)
-		 (sem-core-log "rss" "ARXIV-DIGEST" "SKIP" "Arxiv digest already exists")
-               ;; Generate arxiv digest
-               (let ((entries (sem-rss-collect-entries
-                               (lambda (tags) (member "arxiv" tags))
-                               days)))
-		 (if (null entries)
-                     (sem-core-log "rss" "ARXIV-DIGEST" "SKIP" "No entries found for arxiv filter")
-                   (sem-core-log "rss" "ARXIV-DIGEST" "OK"
-				 (format "Found %d entries for arxiv digest" (length entries))
-				 nil)
-                   (sem-rss--generate-file arxiv-file
-                                           (sem-rss--build-arxiv-prompt entries days)
-                                           "Arxiv Digest"
-                                           days)))))
+             ;; ArXiv digest, staggered behind the general digest step so the
+             ;; two LLM requests are not dispatched back-to-back.  The timer
+             ;; fires after the outer condition-case has already returned, so
+             ;; the deferred body carries its own error handler.
+             (run-at-time
+              sem-rss-arxiv-stagger-seconds nil
+              (lambda ()
+                (condition-case err
+                    (if (file-exists-p arxiv-file)
+                        (sem-core-log "rss" "ARXIV-DIGEST" "SKIP" "Arxiv digest already exists")
+                      ;; Generate arxiv digest
+                      (let ((entries (sem-rss-collect-entries
+                                      (lambda (tags) (member "arxiv" tags))
+                                      days)))
+                        (if (null entries)
+                            (sem-core-log "rss" "ARXIV-DIGEST" "SKIP" "No entries found for arxiv filter")
+                          (sem-core-log "rss" "ARXIV-DIGEST" "OK"
+                                        (format "Found %d entries for arxiv digest" (length entries))
+                                        nil)
+                          (sem-rss--generate-file arxiv-file
+                                                  (sem-rss--build-arxiv-prompt entries days)
+                                                  "Arxiv Digest"
+                                                  days))))
+                  (error
+                   (sem-core-log-error "rss" "ARXIV-DIGEST"
+                                       (error-message-string err)
+                                       nil
+                                       nil)
+                   (message "SEM: arXiv digest error: %s" (error-message-string err)))))))
 
            (sem-core-log "rss" "RSS-DIGEST" "OK" "Morning digest generation completed"))
        (error

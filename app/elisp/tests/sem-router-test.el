@@ -1744,5 +1744,36 @@ with success and the task is written."
     (should (= (sem-router--task-dispatch-delay 5) 0))))
 
 
+(ert-deftest sem-router-test-url-capture-retry-schedules-recapture ()
+  "Test that a rate-limited URL capture schedules a delayed recapture.
+The scheduler must not invoke the capture or callback synchronously;
+firing the timer re-dispatches the same URL and callback."
+  (let ((scheduled nil)
+        (captured nil)
+        (cb-called nil)
+        (url "https://example.com/article")
+        (callback (lambda (filepath _context) (setq cb-called filepath))))
+    ;; Pre-load so the scheduler's `require' cannot rebind the mock.
+    (require 'sem-url-capture)
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (delay _repeat fn &rest args)
+                 (setq scheduled (list delay fn args))))
+              ((symbol-function 'sem-url-capture-process)
+               (lambda (a-url a-callback)
+                 (setq captured (list a-url a-callback))
+                 t))
+              ((symbol-function 'sem-core-log)
+               (lambda (&rest _) nil)))
+      (sem-router--schedule-url-capture-retry url callback 1 "abc123" 1)
+      ;; Nothing runs synchronously: no capture, no callback.
+      (should-not captured)
+      (should-not cb-called)
+      (should (= (nth 0 scheduled)
+                 (sem-router--rate-limit-retry-delay 1)))
+      ;; Firing the timer re-dispatches the same URL and callback.
+      (apply (nth 1 scheduled) (nth 2 scheduled))
+      (should (equal captured (list url callback)))
+      (should-not cb-called))))
+
 (provide 'sem-router-test)
 ;;; sem-router-test.el ends here
