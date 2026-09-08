@@ -1775,5 +1775,153 @@ firing the timer re-dispatches the same URL and callback."
       (should (equal captured (list url callback)))
       (should-not cb-called))))
 
+
+;;; Rate-limit callback regression tests
+
+(ert-deftest sem-router-test-rate-limited-url-callback-schedules-retry ()
+  "Test 429 URL callback schedules in-process retry with the same callback.
+Regression test for the free-variable `callback' reference in the URL
+completion path: a rate-limited failure must schedule the retry without
+signalling and must reuse the callback object registered with the original
+dispatch, and the batch barrier must stay unresolved until the terminal
+outcome."
+  (let ((hash "rate-limited-url-hash")
+        (url "https://example.com/rate-limited")
+        (captured-callback nil)
+        (retry-args nil)
+        (barrier-calls nil)
+        (dlq-called nil)
+        (sem-core--batch-id 5)
+        (sem-core--pending-callbacks 0))
+    (cl-letf (((symbol-function 'sem-router--parse-headlines)
+               (lambda ()
+                 (list (list :title url
+                             :tags '("link")
+                             :body nil
+                             :link url
+                             :hash hash))))
+              ((symbol-function 'sem-url-capture-process)
+               (lambda (_url callback)
+                 (setq captured-callback callback)
+                 t))
+              ((symbol-function 'sem-core--increment-retry)
+               (lambda (_hash) 1))
+              ((symbol-function 'sem-router--schedule-url-capture-retry)
+               (lambda (cb-url callback batch-id cb-hash retry-count)
+                 (setq retry-args (list cb-url callback batch-id cb-hash retry-count))))
+              ((symbol-function 'sem-core--mark-dlq)
+               (lambda (&rest _) (setq dlq-called t)))
+              ((symbol-function 'sem-core--batch-barrier-check)
+               (lambda (&optional batch-id)
+                 (push batch-id barrier-calls)))
+              ((symbol-function 'sem-core-log)
+               (lambda (&rest _) nil))
+              ((symbol-function 'sem-core-log-error)
+               (lambda (&rest _) nil)))
+      (sem-router-process-inbox 5)
+      ;; Simulate the LLM layer reporting a 429 rate limit for the capture.
+      (should captured-callback)
+      (funcall captured-callback nil (list :url url :failure-kind 'rate-limited))
+      ;; Retry scheduled in-process with the SAME callback object.
+      (should retry-args)
+      (should (equal (nth 0 retry-args) url))
+      (should (eq (nth 1 retry-args) captured-callback))
+      (should (equal (nth 2 retry-args) 5))
+      (should (equal (nth 3 retry-args) hash))
+      (should (equal (nth 4 retry-args) 1))
+      ;; Deferred retry: the batch barrier is not resolved yet.
+      (should-not barrier-calls)
+      (should-not dlq-called))))
+
+(ert-deftest sem-router-test-url-callback-retry-exhausted-routes-to-dlq ()
+  "Test 3rd cumulative retryable URL failure routes to DLQ, barrier resolves."
+  (let ((hash "exhausted-url-hash")
+        (url "https://example.com/exhausted")
+        (captured-callback nil)
+        (dlq-called nil)
+        (retry-scheduled nil)
+        (barrier-calls nil)
+        (sem-core--batch-id 6)
+        (sem-core--pending-callbacks 0))
+    (cl-letf (((symbol-function 'sem-router--parse-headlines)
+               (lambda ()
+                 (list (list :title url
+                             :tags '("link")
+                             :body nil
+                             :link url
+                             :hash hash))))
+              ((symbol-function 'sem-url-capture-process)
+               (lambda (_url callback)
+                 (setq captured-callback callback)
+                 t))
+              ((symbol-function 'sem-core--increment-retry)
+               (lambda (_hash) 3))
+              ((symbol-function 'sem-core--mark-dlq)
+               (lambda (&rest _) (setq dlq-called t)))
+              ((symbol-function 'sem-router--schedule-url-capture-retry)
+               (lambda (&rest _) (setq retry-scheduled t)))
+              ((symbol-function 'sem-core--batch-barrier-check)
+               (lambda (&optional batch-id)
+                 (push batch-id barrier-calls)))
+              ((symbol-function 'sem-core-log)
+               (lambda (&rest _) nil))
+              ((symbol-function 'sem-core-log-error)
+               (lambda (&rest _) nil)))
+      (sem-router-process-inbox 6)
+      ;; Rate-limited failure with exhausted retry budget is terminal.
+      (should captured-callback)
+      (funcall captured-callback nil (list :url url :failure-kind 'rate-limited))
+      (should dlq-called)
+      (should-not retry-scheduled)
+      ;; Terminal outcome: barrier resolves exactly once for the active batch.
+      (should (equal barrier-calls (list 6))))))
+
+(ert-deftest sem-router-test-stale-url-callback-rate-limited-no-retry ()
+  "Test stale URL callback with rate-limited kind never schedules a retry.
+The stale branch skips retry/DLQ handling entirely and resolves the
+barrier for the old batch id only."
+  (let ((hash "stale-rate-limited-hash")
+        (url "https://example.com/stale-429")
+        (captured-callback nil)
+        (retry-scheduled nil)
+        (dlq-called nil)
+        (retry-counted nil)
+        (barrier-calls nil)
+        (sem-core--batch-id 7)
+        (sem-core--pending-callbacks 0))
+    (cl-letf (((symbol-function 'sem-router--parse-headlines)
+               (lambda ()
+                 (list (list :title url
+                             :tags '("link")
+                             :body nil
+                             :link url
+                             :hash hash))))
+              ((symbol-function 'sem-url-capture-process)
+               (lambda (_url callback)
+                 (setq captured-callback callback)
+                 t))
+              ((symbol-function 'sem-core--increment-retry)
+               (lambda (_hash) (setq retry-counted t) 1))
+              ((symbol-function 'sem-router--schedule-url-capture-retry)
+               (lambda (&rest _) (setq retry-scheduled t)))
+              ((symbol-function 'sem-core--mark-dlq)
+               (lambda (&rest _) (setq dlq-called t)))
+              ((symbol-function 'sem-core--batch-barrier-check)
+               (lambda (&optional batch-id)
+                 (push batch-id barrier-calls)))
+              ((symbol-function 'sem-core-log)
+               (lambda (&rest _) nil))
+              ((symbol-function 'sem-core-log-error)
+               (lambda (&rest _) nil)))
+      (sem-router-process-inbox 8)
+      ;; Dispatch batch (8) differs from the active batch (7): stale.
+      (should captured-callback)
+      (funcall captured-callback nil (list :url url :failure-kind 'rate-limited))
+      (should-not retry-scheduled)
+      (should-not dlq-called)
+      (should-not retry-counted)
+      ;; Only the old batch's barrier is resolved.
+      (should (equal barrier-calls (list 8))))))
+
 (provide 'sem-router-test)
 ;;; sem-router-test.el ends here

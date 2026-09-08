@@ -1164,73 +1164,72 @@ This is called by sem-core-process-inbox."
                   (cond
                    ;; Link headline -> URL capture (async)
                    (url
-                    (sem-router--runtime-message "route" "URL"
-                                                 (sem-router--runtime-correlation-fields dispatch-batch-id hash))
-                    (setq sem-core--pending-callbacks (1+ sem-core--pending-callbacks))
-                    (sem-url-capture-process
-                     url
-                     (lambda (filepath context)
-                       "Callback for async URL capture.
-Handles success, retry, and DLQ escalation."
-                       (let ((deferred nil))
-                         (if (/= dispatch-batch-id sem-core--batch-id)
-                             (progn
-                              (sem-router--runtime-message
-                               "url-callback" "STALE"
-                               (append (sem-router--runtime-correlation-fields dispatch-batch-id hash)
-                                       (list (cons "active-batch" sem-core--batch-id))))
-                              (sem-core-log "router" "INBOX-ITEM" "SKIP"
-                                            (format "Ignoring stale URL callback: callback-batch=%d active-batch=%d url=%s"
-                                                    dispatch-batch-id sem-core--batch-id url)
-                                            nil)
-                              (when (fboundp 'sem-core--batch-barrier-check)
-                                (sem-core--batch-barrier-check dispatch-batch-id)))
-                          (if filepath
-                             (progn
-                               (sem-core--clear-retry hash)
-                               (sem-router--mark-processed hash)
-                               (setq processed-count (1+ processed-count))
-                               (sem-router--runtime-message "url-callback" "OK"
-                                                            (sem-router--runtime-correlation-fields dispatch-batch-id hash))
-                               (when (fboundp 'sem-core--batch-barrier-check)
-                                 (sem-core--batch-barrier-check dispatch-batch-id)))
-                           (let ((failure-kind (plist-get context :failure-kind)))
-                             (if (eq failure-kind 'security-malformed)
-                                 (progn
-                                   (sem-core-log "router" "URL-CAPTURE" "DLQ"
-                                                 (format "URL capture security preflight failed, moved to DLQ: %s" url)
-                                                 nil)
-                                   (sem-core--mark-dlq hash title nil)
-                                   (sem-router--runtime-message "url-callback" "DLQ"
-                                                                (append (sem-router--runtime-correlation-fields dispatch-batch-id hash)
-                                                                        (list (cons "reason" "security-malformed")))))
-                               (let ((retry-count (sem-core--increment-retry hash)))
-                                 (if (>= retry-count 3)
-                                     (progn
-                                       (sem-core--mark-dlq hash title nil)
-                                       (sem-router--runtime-message "url-callback" "DLQ"
-                                                                    (append (sem-router--runtime-correlation-fields dispatch-batch-id hash)
-                                                                            (list (cons "reason" "retry-exhausted")
-                                                                                  (cons "attempt" retry-count)
-                                                                                  (cons "max" 3)))))
-                                   (if (eq failure-kind 'rate-limited)
+                    (let (url-completion-callback)
+                      (setq url-completion-callback
+                            (lambda (filepath context)
+                             "Callback for async URL capture: success, retry, DLQ, stale batches."
+                             (let ((deferred nil))
+                               (if (/= dispatch-batch-id sem-core--batch-id)
+                                   (progn
+                                    (sem-router--runtime-message
+                                     "url-callback" "STALE"
+                                     (append (sem-router--runtime-correlation-fields dispatch-batch-id hash)
+                                             (list (cons "active-batch" sem-core--batch-id))))
+                                    (sem-core-log "router" "INBOX-ITEM" "SKIP"
+                                                  (format "Ignoring stale URL callback: callback-batch=%d active-batch=%d url=%s"
+                                                          dispatch-batch-id sem-core--batch-id url)
+                                                  nil)
+                                    (when (fboundp 'sem-core--batch-barrier-check)
+                                      (sem-core--batch-barrier-check dispatch-batch-id)))
+                                (if filepath
+                                   (progn
+                                     (sem-core--clear-retry hash)
+                                     (sem-router--mark-processed hash)
+                                     (setq processed-count (1+ processed-count))
+                                     (sem-router--runtime-message "url-callback" "OK"
+                                                                  (sem-router--runtime-correlation-fields dispatch-batch-id hash))
+                                     (when (fboundp 'sem-core--batch-barrier-check)
+                                       (sem-core--batch-barrier-check dispatch-batch-id)))
+                                 (let ((failure-kind (plist-get context :failure-kind)))
+                                   (if (eq failure-kind 'security-malformed)
                                        (progn
-                                         (setq deferred t)
-                                         (sem-router--schedule-url-capture-retry
-                                          url callback dispatch-batch-id hash retry-count))
-                                     (progn
-                                       (when (eq failure-kind 'timeout)
-                                         (sem-core-log "router" "URL-CAPTURE" "FAIL"
-                                                       (format "URL capture timeout (attempt %d/3): %s"
-                                                               retry-count url)
-                                                       nil))
-                                       (sem-router--runtime-message "url-callback" "RETRY"
-                                                                    (append (sem-router--runtime-correlation-fields dispatch-batch-id hash)
-                                                                            (list (cons "attempt" retry-count)
-                                                                                  (cons "max" 3))))))))
-                             (when (and (not deferred) (fboundp 'sem-core--batch-barrier-check))
-                               (sem-core--batch-barrier-check dispatch-batch-id))))))))))
-                    ;; Task headline -> LLM task generation (async)
+                                         (sem-core-log "router" "URL-CAPTURE" "DLQ"
+                                                       (format "URL capture security preflight failed, moved to DLQ: %s" url)
+                                                       nil)
+                                         (sem-core--mark-dlq hash title nil)
+                                         (sem-router--runtime-message "url-callback" "DLQ"
+                                                                      (append (sem-router--runtime-correlation-fields dispatch-batch-id hash)
+                                                                              (list (cons "reason" "security-malformed")))))
+                                     (let ((retry-count (sem-core--increment-retry hash)))
+                                       (if (>= retry-count 3)
+                                           (progn
+                                             (sem-core--mark-dlq hash title nil)
+                                             (sem-router--runtime-message "url-callback" "DLQ"
+                                                                          (append (sem-router--runtime-correlation-fields dispatch-batch-id hash)
+                                                                                  (list (cons "reason" "retry-exhausted")
+                                                                                        (cons "attempt" retry-count)
+                                                                                        (cons "max" 3)))))
+                                         (if (eq failure-kind 'rate-limited)
+                                             (progn
+                                               (setq deferred t)
+                                               (sem-router--schedule-url-capture-retry
+                                                url url-completion-callback dispatch-batch-id hash retry-count))
+                                           (progn
+                                             (when (eq failure-kind 'timeout)
+                                               (sem-core-log "router" "URL-CAPTURE" "FAIL"
+                                                             (format "URL capture timeout (attempt %d/3): %s"
+                                                                     retry-count url)
+                                                             nil))
+                                             (sem-router--runtime-message "url-callback" "RETRY"
+                                                                          (append (sem-router--runtime-correlation-fields dispatch-batch-id hash)
+                                                                                  (list (cons "attempt" retry-count)
+                                                                                        (cons "max" 3))))))))
+                                   (when (and (not deferred) (fboundp 'sem-core--batch-barrier-check))
+                                     (sem-core--batch-barrier-check dispatch-batch-id)))))))))
+                      (sem-url-capture-process
+                       url
+                       url-completion-callback)))
+;; Task headline -> LLM task generation (async)
                    ((sem-router--is-task-headline headline)
                     (sem-router--runtime-message "route" "TASK"
                                                  (sem-router--runtime-correlation-fields dispatch-batch-id hash))
