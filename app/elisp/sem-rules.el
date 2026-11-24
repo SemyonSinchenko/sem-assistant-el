@@ -3,12 +3,12 @@
 
 ;;; Commentary:
 ;; This module provides access to user-defined scheduling preferences
-;; stored in /data/rules.org. The rules file contains natural language
+;; stored in /data/tasks/rules.org. The rules file contains natural language
 ;; guidance for the LLM about when and how to schedule tasks.
 
 ;;; Code:
 
-(defconst sem-rules-file "/data/rules.org"
+(defconst sem-rules-file "/data/tasks/rules.org"
   "Path to the user scheduling preferences file.")
 
 (defun sem-rules-read ()

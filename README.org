@@ -21,7 +21,7 @@ pipeline.
 
 * How to use
 ** Hardcoded flows and tags
-- Inbox source is =/data/inbox-mobile.org=.
+- Inbox source is =/data/tasks/inbox-mobile.org=.
 - Headline tagged =:task:= is routed to task normalization + planning flow.
 - Headline tagged =:link:= is routed to URL capture flow.
 - Headline title that starts with =http://= or =https://= is treated as link
@@ -29,9 +29,9 @@ pipeline.
 - Unknown headline types are skipped and logged.
 
 ** Daily plan
-- Every day at 07:00 the daemon writes =/data/daily-plan.org=.
-- It reads open tasks from =/data/tasks.org= (overdue, scheduled today,
-  deadlines within 7 days, unscheduled backlog) plus =/data/rules.org= and asks
+- Every day at 07:00 the daemon writes =/data/tasks/daily-plan.org=.
+- It reads open tasks from =/data/tasks/tasks.org= (overdue, scheduled today,
+  deadlines within 7 days, unscheduled backlog) plus =rules.org= and asks
   the LLM to pick today's tasks with time blocks, a reason and a first step.
 - Overdue tasks that do not fit get a "reschedule to <date>" or "drop"
   suggestion. =tasks.org= itself is never modified by the daily plan.
@@ -42,7 +42,7 @@ pipeline.
   #+end_src
 
 ** Scheduling rules
-=/data/rules.org= is free text passed to task normalization, the planner and
+=/data/tasks/rules.org= is free text passed to task normalization, the planner and
 the daily plan. Concrete rules work best, for example working hours, days off,
 per-category windows ("family tasks after 18:00"), a daily workload limit, and
 which kinds of tasks to batch together.
@@ -55,7 +55,7 @@ written by older versions had SCHEDULED after the property drawer; the planner
 still reads those, and they can be fixed once with:
 #+begin_src sh
 docker compose exec emacs emacsclient -s sem-server \
-  -e '(sem-core-repair-planning-lines "/data/tasks.org")'
+  -e '(sem-core-repair-planning-lines "/data/tasks/tasks.org")'
 #+end_src
 
 ** LLM provider
@@ -68,12 +68,22 @@ docker compose exec emacs emacsclient -s sem-server \
   default, which can take minutes for these bounded transformations.
 
 ** Path contract
-- Shared runtime root: =/data=.
-- Scheduler rules file: =/data/rules.org=.
-- Task output file: =/data/tasks.org=.
-- Daily plan file: =/data/daily-plan.org=.
-- org-roam repository root: =/data/org-roam=.
-- org-roam notes subtree: =/data/org-roam/org-files=.
+=/data= is split so that WebDAV clients (Orgzly, organice) can only reach
+tasks and settings; knowledge files live in the git repository.
+
+#+begin_example
+/data/tasks/      WebDAV root: inbox-mobile.org, tasks.org, rec-tasks.org,
+                  daily-plan.org, rules.org, feeds.org, prompts/, errors.org
+/data/org-roam/   git repository: org-files/ (org-roam notes), notes/,
+                  journal/YYYY-MM.org, digest/ (+ digest/archive/YYYY-MM/)
+/data/            daemon internals: sem-log.org, elfeed/, cursor files
+#+end_example
+
+- :journal: captures are appended to the current month's
+  =journal/YYYY-MM.org=; older months can be edited freely.
+- A legacy flat =/data= is migrated automatically at daemon startup
+  (=sem-migrate.el=): idempotent, never overwrites, logs conflicts, and keeps
+  the original =journal.org= under =/data/.migrated/=.
 
 ** org-roam flow
 - Link captures become org-roam nodes under =/data/org-roam/org-files=.

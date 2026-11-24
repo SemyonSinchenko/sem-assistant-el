@@ -14,7 +14,7 @@
 (require 'sem-llm)
 (require 'sem-time)
 
-(defconst sem-planner-tasks-file "/data/tasks.org"
+(defconst sem-planner-tasks-file "/data/tasks/tasks.org"
   "Path to the tasks file.")
 
 (defvar sem-planner--max-retries 3

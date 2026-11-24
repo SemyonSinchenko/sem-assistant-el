@@ -20,14 +20,21 @@
 
 ;;; Constants
 
-(defconst sem-router-inbox-file "/data/inbox-mobile.org"
+(defconst sem-router-inbox-file "/data/tasks/inbox-mobile.org"
   "Path to the inbox file to process.")
 
-(defconst sem-router-tasks-file "/data/tasks.org"
+(defconst sem-router-tasks-file "/data/tasks/tasks.org"
   "Path to the tasks file where processed @task headlines are written.")
 
-(defconst sem-router-journal-file "/data/journal.org"
-  "Path to the journal file where processed :journal: headlines are written.")
+(defconst sem-router-journal-dir "/data/org-roam/journal/"
+  "Directory of monthly journal files (YYYY-MM.org) for :journal: headlines.
+One file per month keeps edits of older months (from orgnote or Emacs)
+from conflicting with the daemon appending to the current month.")
+
+(defun sem-router--journal-file (time)
+  "Return the monthly journal file path for TIME."
+  (expand-file-name (concat (format-time-string "%Y-%m" time) ".org")
+                    sem-router-journal-dir))
 
 (defconst sem-router-task-tags '("work" "family" "routine" "opensource")
   "Allowed tags for task headlines. Must be one of these values.")
@@ -324,7 +331,7 @@ Returns ":tag1:tag2:" when tags are present, otherwise an empty string."
        (string-match-p (format "^%s$" (regexp-quote heading)) content)))
 
 (defun sem-router--journal-next-item-number (content day-heading)
-  "Return next numeric `**** N' index for DAY-HEADING within CONTENT."
+  "Return next numeric `** N' index for DAY-HEADING within CONTENT."
   (with-temp-buffer
     (insert (or content ""))
     (goto-char (point-min))
@@ -336,11 +343,11 @@ Returns ":tag1:tag2:" when tags are present, otherwise an empty string."
         (save-excursion
           (goto-char day-start)
           (setq day-end
-                (if (re-search-forward "^\\*\\*\\* " nil t)
+                (if (re-search-forward "^\\* " nil t)
                     (match-beginning 0)
                   (point-max))))
         (goto-char day-start)
-        (while (re-search-forward "^\\*\\*\\*\\* \\([0-9]+\\)$" day-end t)
+        (while (re-search-forward "^\\*\\* \\([0-9]+\\)$" day-end t)
           (setq max-number (max max-number (string-to-number (match-string 1)))))
         (1+ max-number)))))
 
@@ -1053,7 +1060,7 @@ Signals an error when required headline metadata is missing."
         (ingested-at (or (plist-get entry :ingested-at) ""))
         (tags-inbox (or (plist-get entry :tags-inbox) ""))
         (mentions-raw (or (plist-get entry :mentions-raw) "")))
-    (concat (format "**** %d\n" item-number)
+    (concat (format "** %d\n" item-number)
             ":PROPERTIES:\n"
             (format ":INGESTED_AT: %s\n" ingested-at)
             (format ":TAGS_INBOX: %s\n" tags-inbox)
@@ -1065,25 +1072,20 @@ Signals an error when required headline metadata is missing."
 
 (defun sem-router--journal-build-append-payload (entries ingest-time existing-content)
   "Build one append payload for ENTRIES at INGEST-TIME.
-Uses EXISTING-CONTENT to add missing date-tree headings once and continue day numbering."
-  (let* ((year (format-time-string "%Y" ingest-time))
-         (month (format-time-string "%Y-%m" ingest-time))
+EXISTING-CONTENT is the current content of the monthly journal file.  A new
+file gets a title line; the `* YYYY-MM-DD' day heading is added once and
+`** N' item numbering continues within the day."
+  (let* ((month (format-time-string "%Y-%m" ingest-time))
          (day (format-time-string "%Y-%m-%d" ingest-time))
-         (year-heading (format "* %s" year))
-         (month-heading (format "** %s" month))
-         (day-heading (format "*** %s" day))
-         (year-exists (sem-router--journal-heading-exists-p existing-content year-heading))
-         (month-exists (sem-router--journal-heading-exists-p existing-content month-heading))
-         (day-exists (sem-router--journal-heading-exists-p existing-content day-heading))
-         (next-number (sem-router--journal-next-item-number existing-content day-heading))
+         (day-heading (format "* %s" day))
+         (existing (or existing-content ""))
+         (day-exists (sem-router--journal-heading-exists-p existing day-heading))
+         (next-number (sem-router--journal-next-item-number existing day-heading))
          (payload ""))
-    (when (and (not (string-empty-p (or existing-content "")))
-               (not (string-suffix-p "\n" existing-content)))
-      (setq payload (concat payload "\n")))
-    (unless year-exists
-      (setq payload (concat payload year-heading "\n")))
-    (unless month-exists
-      (setq payload (concat payload month-heading "\n")))
+    (if (string-empty-p existing)
+        (setq payload (format "#+TITLE: Journal %s\n\n" month))
+      (unless (string-suffix-p "\n" existing)
+        (setq payload "\n")))
     (unless day-exists
       (setq payload (concat payload day-heading "\n")))
     (dolist (entry entries)
@@ -1092,11 +1094,12 @@ Uses EXISTING-CONTENT to add missing date-tree headings once and continue day nu
       (setq next-number (1+ next-number)))
     payload))
 
-(defun sem-router--journal-atomic-append (append-payload)
-  "Append APPEND-PAYLOAD to `sem-router-journal-file' using temp-file + rename.
+(defun sem-router--journal-atomic-append (append-payload &optional journal-file)
+  "Append APPEND-PAYLOAD to JOURNAL-FILE using temp-file + rename.
+JOURNAL-FILE defaults to the current month's file.
 Returns t on success, nil on error."
   (condition-case err
-      (let* ((journal-file sem-router-journal-file)
+      (let* ((journal-file (or journal-file (sem-router--journal-file (current-time))))
              (tmp-file (concat journal-file ".tmp"))
              (existing-content ""))
         (when (file-exists-p journal-file)
@@ -1135,9 +1138,10 @@ Returns plist with :processed count and :failed non-nil on batch failure."
                 (list :processed 0 :failed nil :attempted 0))
             (let* ((ingest-time (current-time))
                    (ingested-at (sem-time-format-iso-local ingest-time))
-                   (existing-content (if (file-exists-p sem-router-journal-file)
+                   (journal-file (sem-router--journal-file ingest-time))
+                   (existing-content (if (file-exists-p journal-file)
                                          (with-temp-buffer
-                                           (insert-file-contents sem-router-journal-file)
+                                           (insert-file-contents journal-file)
                                            (buffer-string))
                                        ""))
                    (entries '()))
@@ -1167,7 +1171,7 @@ Returns plist with :processed count and :failed non-nil on batch failure."
               (let* ((prepared-entries (nreverse entries))
                      (append-payload (sem-router--journal-build-append-payload
                                       prepared-entries ingest-time existing-content)))
-                (if (sem-router--journal-atomic-append append-payload)
+                (if (sem-router--journal-atomic-append append-payload journal-file)
                     (progn
                       (dolist (entry prepared-entries)
                         (sem-router--mark-processed (plist-get entry :hash)))
@@ -1207,7 +1211,7 @@ Returns plist with :processed count and :failed non-nil on batch failure."
 (defun sem-router-process-inbox (&optional batch-id)
   "Process all unprocessed headlines from inbox-mobile.org.
 Routes each headline to the appropriate handler:
- - :journal: headlines -> deterministic batch journal append path
+ - :journal: headlines -> deterministic batch append to the monthly journal
  - @link or URL headlines -> sem-url-capture-process
  - @task headlines -> LLM task generation
  - Unknown tags -> skip with log

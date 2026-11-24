@@ -7,6 +7,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 COMPOSE_FILE="$REPO_ROOT/docker-compose.yml"
 COMPOSE_OVERRIDE="$SCRIPT_DIR/docker-compose.webdav-httpd.test.yml"
 TEST_DATA_DIR="$REPO_ROOT/test-data-httpd"
+# Apache serves only the /data/tasks subtree of the mounted volume.
+TEST_SERVED_DIR="$TEST_DATA_DIR/tasks"
 TEST_CERTS_DIR="$REPO_ROOT/test-data-httpd-certs"
 
 WEBDAV_PORT="${WEBDAV_PORT:-16066}"
@@ -85,8 +87,8 @@ if [[ -d "$TEST_DATA_DIR" || -d "$TEST_CERTS_DIR" ]]; then
     podman unshare rm -rf "$TEST_DATA_DIR" "$TEST_CERTS_DIR" >/dev/null 2>&1 || true
   fi
 fi
-mkdir -p "$TEST_DATA_DIR" "$TEST_CERTS_DIR/live/$WEBDAV_DOMAIN" "$TEST_CERTS_DIR/live/$ORGANICE_DOMAIN"
-printf 'v1\n' > "$TEST_DATA_DIR/simple.txt"
+mkdir -p "$TEST_SERVED_DIR" "$TEST_CERTS_DIR/live/$WEBDAV_DOMAIN" "$TEST_CERTS_DIR/live/$ORGANICE_DOMAIN"
+printf 'v1\n' > "$TEST_SERVED_DIR/simple.txt"
 
 openssl req -x509 -nodes -newkey rsa:2048 \
   -keyout "$TEST_CERTS_DIR/live/$WEBDAV_DOMAIN/privkey.pem" \
@@ -156,7 +158,7 @@ if [[ "$etag_v1" =~ ^W/ ]]; then
   echo "PASS: valid conditional PUT accepted (HTTP $status_valid)"
 
   echo "== Check 3: stale conditional PUT rejection =="
-  printf 'v3-host-side-change\n' > "$TEST_DATA_DIR/simple.txt"
+  printf 'v3-host-side-change\n' > "$TEST_SERVED_DIR/simple.txt"
 
   status_stale=$(curl -k -sS -o /dev/null -w '%{http_code}' \
     -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
@@ -196,7 +198,7 @@ else
   etag_v2=$(extract_etag "simple.txt")
 
   echo "== Check 3: stale conditional PUT rejection =="
-  printf 'v3-host-side-change\n' > "$TEST_DATA_DIR/simple.txt"
+  printf 'v3-host-side-change\n' > "$TEST_SERVED_DIR/simple.txt"
 
   status_stale=$(curl -k -sS -o /dev/null -w '%{http_code}' \
     -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
@@ -220,7 +222,7 @@ else
 fi
 
 echo "== Check 4: data mount semantics (WebDAV -> host) =="
-host_content=$(cat "$TEST_DATA_DIR/simple.txt")
+host_content=$(cat "$TEST_SERVED_DIR/simple.txt")
 if [[ "$host_content" != $'v4-fresh' ]]; then
   echo "FAIL: WebDAV write did not persist to host-mounted /data"
   exit 1

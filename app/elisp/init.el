@@ -214,7 +214,9 @@ This is pre-wiring for future github-integration."
           (insert "# org-roam database files\n")
           (insert "org-roam.db\n")
           (insert "*.db-shm\n")
-          (insert "*.db-wal\n"))))
+          (insert "*.db-wal\n")
+          (insert "# daemon-managed read-only copies\n")
+          (insert "sem/\n"))))
     (message "SEM: Git repo ready")))
 
 ;;; 7. Database Initialization
@@ -288,6 +290,7 @@ sem-prompts must load before sem-router and sem-url-capture."
     (require 'sem-router)
     (require 'sem-planner)
     (require 'sem-daily-plan)
+    (require 'sem-migrate)
     (message "SEM: All modules loaded")))
 
 ;;; 9. Install *Messages* Redirection Hook
@@ -324,6 +327,10 @@ written to errors.org to aid debugging."
         ;; Step 4: Set paths
         (message "SEM: Starting init step 4/10 - set paths")
         (sem-init--set-paths)
+        ;; Move a legacy flat /data into the tasks / repository split before
+        ;; any module touches files.  Idempotent, never signals.
+        (require 'sem-migrate)
+        (sem-migrate-data-layout)
         (sem-init--mark-startup-invariant 'paths-configured)
         (message "SEM: Step 4/10 complete - paths configured")
         ;; Step 5: Set security globals

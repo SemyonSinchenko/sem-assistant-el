@@ -79,7 +79,8 @@ app/elisp/              Source modules (load order matters — see init.el)
   sem-url-capture.el    URL → org-roam pipeline
   sem-rss.el            RSS/arXiv digest generation
   sem-planner.el        Pass 2 scheduling of new tasks
-  sem-daily-plan.el     Morning day plan (/data/daily-plan.org)
+  sem-daily-plan.el     Morning day plan (/data/tasks/daily-plan.org)
+  sem-migrate.el        One-time migration to the /data/tasks + org-roam split
   sem-git-sync.el       Automated org-roam → GitHub sync
   tests/                ERT test suite
     sem-mock.el         Shared mock helpers (load first)

@@ -1390,7 +1390,7 @@ Empty body is valid for zero-body headlines."
       (should-not url-called))))
 
 (ert-deftest sem-router-test-journal-payload-inserts-missing-date-headings-once ()
-  "Test payload adds missing year/month/day headings once for a batch." 
+  "Test payload adds the title and day heading once for a new monthly file."
   (let* ((entries (list (list :body "one" :ingested-at "2026-04-21T00:00:00+00:00"
                               :tags-inbox ":work:" :mentions-raw "boss")
                         (list :body "two" :ingested-at "2026-04-21T00:00:00+00:00"
@@ -1399,8 +1399,9 @@ Empty body is valid for zero-body headlines."
                    entries
                    (encode-time 0 0 10 21 4 2026 t)
                    "")))
-    (should (string-prefix-p "* 2026\n** 2026-04\n*** 2026-04-21\n" payload))
-    (dolist (heading '("* 2026\n" "** 2026-04\n" "*** 2026-04-21\n"))
+    (should (string-prefix-p "#+TITLE: Journal 2026-04\n\n* 2026-04-21\n** 1\n" payload))
+    (should (string-match-p (regexp-quote "** 2\n") payload))
+    (dolist (heading '("#+TITLE: Journal 2026-04\n" "* 2026-04-21\n"))
       (let ((count 0)
             (start 0))
         (while (string-match (regexp-quote heading) payload start)
@@ -1410,7 +1411,7 @@ Empty body is valid for zero-body headlines."
 
 (ert-deftest sem-router-test-journal-payload-continues-day-numbering ()
   "Test payload numbering continues from existing numeric day items." 
-  (let* ((existing "* 2026\n** 2026-04\n*** 2026-04-21\n**** 1\n**** 2\n")
+  (let* ((existing "#+TITLE: Journal 2026-04\n\n* 2026-04-20\n** 1\n* 2026-04-21\n** 1\n** 2\n")
          (entries (list (list :body "three" :ingested-at "2026-04-21T00:00:00+00:00"
                               :tags-inbox "" :mentions-raw "")
                         (list :body "four" :ingested-at "2026-04-21T00:00:00+00:00"
@@ -1419,9 +1420,10 @@ Empty body is valid for zero-body headlines."
                    entries
                    (encode-time 0 0 10 21 4 2026 t)
                    existing)))
-    (should (string-prefix-p "**** 3\n" payload))
-    (should (string-match-p (regexp-quote "**** 4\n") payload))
-    (should-not (string-match-p "\\* 2026\\n" payload))))
+    (should (string-prefix-p "** 3\n" payload))
+    (should (string-match-p (regexp-quote "** 4\n") payload))
+    (should-not (string-match-p "TITLE" payload))
+    (should-not (string-match-p "^\\* 2026-04-21" payload))))
 
 (ert-deftest sem-router-test-journal-process-batch-builds-before-single-append ()
   "Test journal batch prepares all entries before one append call." 
@@ -1447,7 +1449,7 @@ Empty body is valid for zero-body headlines."
                  (should (= build-count 2))
                  "payload"))
               ((symbol-function 'sem-router--journal-atomic-append)
-               (lambda (_payload)
+               (lambda (_payload &optional _file)
                  (setq append-calls (1+ append-calls))
                  t))
               ((symbol-function 'sem-router--mark-processed)

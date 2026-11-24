@@ -17,6 +17,8 @@ PREEXISTING_TASKS_FIXTURE="$SCRIPT_DIR/testing-resources/preexisting-tasks.org"
 PREEXISTING_UMBRELLA_FIXTURE="$SCRIPT_DIR/testing-resources/20260313152244-llm.org"
 FEEDS_FIXTURE="$SCRIPT_DIR/testing-resources/feeds.org"
 TEST_DATA_DIR="$REPO_ROOT/test-data"
+# WebDAV-facing tasks/settings subtree (/data/tasks in the containers).
+TEST_DATA_TASKS_DIR="$TEST_DATA_DIR/tasks"
 ORG_ROAM_REPO_DIR="$TEST_DATA_DIR/org-roam"
 ORG_ROAM_NOTES_DIR="$ORG_ROAM_REPO_DIR/org-files"
 TEST_RESULTS_DIR="$REPO_ROOT/test-results"
@@ -173,8 +175,9 @@ setup_test_data() {
     mkdir -p "$ORG_ROAM_REPO_DIR"
     mkdir -p "$ORG_ROAM_NOTES_DIR"
     mkdir -p "$TEST_DATA_DIR/elfeed"
-    mkdir -p "$TEST_DATA_DIR/morning-read"
-    mkdir -p "$TEST_DATA_DIR/prompts"
+    mkdir -p "$TEST_DATA_TASKS_DIR/prompts"
+    mkdir -p "$ORG_ROAM_REPO_DIR/digest"
+    mkdir -p "$ORG_ROAM_REPO_DIR/journal"
 
     if [[ ! -f "$PREEXISTING_TASKS_FIXTURE" ]]; then
         echo "ERROR: pre-existing tasks fixture not found: $PREEXISTING_TASKS_FIXTURE" >&2
@@ -195,16 +198,16 @@ setup_test_data() {
     fi
 
     echo "Installing pre-existing tasks fixture into WebDAV data path..."
-    cp "$PREEXISTING_TASKS_FIXTURE" "$TEST_DATA_DIR/tasks.org"
+    cp "$PREEXISTING_TASKS_FIXTURE" "$TEST_DATA_TASKS_DIR/tasks.org"
 
     echo "Seeding pre-existing umbrella fixture into runtime org-roam directory..."
     cp "$PREEXISTING_UMBRELLA_FIXTURE" "$ORG_ROAM_NOTES_DIR/"
 
     echo "Installing feeds fixture into runtime data path..."
-    cp "$FEEDS_FIXTURE" "$TEST_DATA_DIR/feeds.org"
+    cp "$FEEDS_FIXTURE" "$TEST_DATA_TASKS_DIR/feeds.org"
 
     echo "Validating pre-existing fixture shape..."
-    python3 - "$TEST_DATA_DIR/tasks.org" <<'PY'
+    python3 - "$TEST_DATA_TASKS_DIR/tasks.org" <<'PY'
 import re
 import sys
 
@@ -744,7 +747,7 @@ upload_inbox() {
     echo "Inbox uploaded successfully"
     
     echo "Also copying to TEST_DATA_DIR for reference..."
-    cp "$TEST_INBOX" "$TEST_DATA_DIR/inbox-mobile.org"
+    cp "$TEST_INBOX" "$TEST_DATA_TASKS_DIR/inbox-mobile.org"
 }
 
 verify_inbox_upload() {
@@ -791,19 +794,19 @@ diagnose_inbox_file() {
     echo "=== Diagnosing Inbox File Visibility ==="
     
     # Step 1: Check that emacs can read the file
-    echo "[Step 1] Checking if emacs can read /data/inbox-mobile.org..."
+    echo "[Step 1] Checking if emacs can read /data/tasks/inbox-mobile.org..."
     podman-compose exec emacs emacsclient -s sem-server --eval '(message "DIAG-CHECK: Starting file existence check")'
-    podman-compose exec emacs emacsclient -s sem-server --eval '(message "DIAG-CHECK: file-exists-p = %s" (file-exists-p "/data/inbox-mobile.org"))'
-    podman-compose exec emacs emacsclient -s sem-server --eval '(message "DIAG-CHECK: file-readable-p = %s" (file-readable-p "/data/inbox-mobile.org"))'
-    podman-compose exec emacs emacsclient -s sem-server --eval '(message "DIAG-CHECK: file-writable-p = %s" (file-writable-p "/data/inbox-mobile.org"))'
+    podman-compose exec emacs emacsclient -s sem-server --eval '(message "DIAG-CHECK: file-exists-p = %s" (file-exists-p "/data/tasks/inbox-mobile.org"))'
+    podman-compose exec emacs emacsclient -s sem-server --eval '(message "DIAG-CHECK: file-readable-p = %s" (file-readable-p "/data/tasks/inbox-mobile.org"))'
+    podman-compose exec emacs emacsclient -s sem-server --eval '(message "DIAG-CHECK: file-writable-p = %s" (file-writable-p "/data/tasks/inbox-mobile.org"))'
     echo "[Step 1] File existence check complete"
     
     # Step 2: Read the file and write it back with a different name
     echo "[Step 2] Reading inbox-mobile.org and writing copy to inbox-mobile.copy.org..."
     podman-compose exec emacs emacsclient -s sem-server --eval '
 (with-temp-buffer
-  (let ((src "/data/inbox-mobile.org")
-        (dst "/data/inbox-mobile.copy.org"))
+  (let ((src "/data/tasks/inbox-mobile.org")
+        (dst "/data/tasks/inbox-mobile.copy.org"))
     (message "DIAG-COPY: Starting copy operation from %s to %s" src dst)
     (if (file-exists-p src)
         (progn
@@ -829,12 +832,12 @@ diagnose_inbox_file() {
                              (setq diag-output (concat diag-output text "\n")))))
       (diag-insert "=== INBOX DIAGNOSTIC ===")
       (diag-insert "Time: %s" (current-time-string))
-      (diag-insert "File exists: %s" (file-exists-p "/data/inbox-mobile.org"))
-      (diag-insert "File readable: %s" (file-readable-p "/data/inbox-mobile.org"))
-      (diag-insert "File writable: %s" (file-writable-p "/data/inbox-mobile.org"))
-      (diag-insert "Copy file exists: %s" (file-exists-p "/data/inbox-mobile.copy.org"))
-      (when (file-exists-p "/data/inbox-mobile.org")
-        (insert-file-contents "/data/inbox-mobile.org")
+      (diag-insert "File exists: %s" (file-exists-p "/data/tasks/inbox-mobile.org"))
+      (diag-insert "File readable: %s" (file-readable-p "/data/tasks/inbox-mobile.org"))
+      (diag-insert "File writable: %s" (file-writable-p "/data/tasks/inbox-mobile.org"))
+      (diag-insert "Copy file exists: %s" (file-exists-p "/data/tasks/inbox-mobile.copy.org"))
+      (when (file-exists-p "/data/tasks/inbox-mobile.org")
+        (insert-file-contents "/data/tasks/inbox-mobile.org")
         (diag-insert "Buffer size: %d bytes" (point-max))
         (diag-insert "First 300 chars:")
         (diag-insert "%s" (buffer-substring-no-properties (point-min) (min (point-max) 300)))
@@ -903,7 +906,7 @@ wait_for_tasks() {
         if curl --fail --silent --show-error \
             -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
             -o "$temp_file" \
-            "${WEBDAV_BASE_URL}/data/tasks.org" 2>/dev/null; then
+            "${WEBDAV_BASE_URL}/data/tasks/tasks.org" 2>/dev/null; then
             
             # Count TODO entries
             todo_count=$(grep -c '^\* TODO ' "$temp_file" 2>/dev/null || echo "0")
@@ -955,7 +958,7 @@ collect_artifacts() {
         curl --silent --show-error \
             -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
             -o "$RUN_DIR/tasks.org" \
-            "${WEBDAV_BASE_URL}/data/tasks.org" 2>/dev/null || touch "$RUN_DIR/tasks.org"
+            "${WEBDAV_BASE_URL}/data/tasks/tasks.org" 2>/dev/null || touch "$RUN_DIR/tasks.org"
     fi
     
     # GET sem-log.org
@@ -970,18 +973,18 @@ collect_artifacts() {
     if ! curl --fail --silent --show-error \
         -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
         -o "$RUN_DIR/errors.org" \
-        "${WEBDAV_BASE_URL}/data/errors.org" 2>/dev/null; then
+        "${WEBDAV_BASE_URL}/data/tasks/errors.org" 2>/dev/null; then
         echo "errors.org not found (this is OK)"
         touch "$RUN_DIR/errors.org"
     fi
 
-    # GET journal.org (may 404 when journal route fails)
-    echo "Fetching journal.org (may not exist)..."
-    if ! curl --fail --silent --show-error \
-        -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
-        -o "$RUN_DIR/journal.org" \
-        "${WEBDAV_BASE_URL}/data/journal.org" 2>/dev/null; then
-        echo "journal.org not found"
+    # Journal lives in monthly files in the org-roam repo, which is not
+    # served by WebDAV; read them from the bind-mounted test data instead.
+    echo "Collecting monthly journal files (may not exist)..."
+    if compgen -G "$ORG_ROAM_REPO_DIR/journal/*.org" > /dev/null; then
+        cat "$ORG_ROAM_REPO_DIR"/journal/*.org > "$RUN_DIR/journal.org"
+    else
+        echo "journal files not found"
         touch "$RUN_DIR/journal.org"
     fi
     
@@ -1931,7 +1934,7 @@ run_paid_inbox_validation() {
     diagnose_inbox_file
     
     echo "Saving container view of inbox-mobile.org..."
-    podman-compose exec emacs cat /data/inbox-mobile.org > "$RUN_DIR/container-inbox-mobile.org" 2>/dev/null || echo "Could not save container inbox"
+    podman-compose exec emacs cat /data/tasks/inbox-mobile.org > "$RUN_DIR/container-inbox-mobile.org" 2>/dev/null || echo "Could not save container inbox"
     
     trigger_inbox_processing
     
@@ -1946,20 +1949,20 @@ run_paid_inbox_validation() {
   (require (quote org-element))
   (insert "=== PROCESSING DIAGNOSTIC ===\n")
   (insert (format "Time: %s\n" (current-time-string)))
-  (insert (format "inbox-mobile.org exists: %s\n" (file-exists-p "/data/inbox-mobile.org")))
-  (insert (format "tasks.org exists: %s\n" (file-exists-p "/data/tasks.org")))
-  (when (file-exists-p "/data/tasks.org")
-    (insert-file-contents "/data/tasks.org")
+  (insert (format "inbox-mobile.org exists: %s\n" (file-exists-p "/data/tasks/inbox-mobile.org")))
+  (insert (format "tasks.org exists: %s\n" (file-exists-p "/data/tasks/tasks.org")))
+  (when (file-exists-p "/data/tasks/tasks.org")
+    (insert-file-contents "/data/tasks/tasks.org")
     (insert (format "Tasks file size: %d bytes\n" (point-max)))
     (insert (format "Tasks content (first 500 chars):\n%s\n"
             (buffer-substring-no-properties (point-min) (min (point-max) 500)))))
-  (when (file-exists-p "/data/inbox-mobile.org")
+  (when (file-exists-p "/data/tasks/inbox-mobile.org")
     (insert "\n--- Inbox still exists, content (first 200 chars): ---\n")
-    (insert-file-contents "/data/inbox-mobile.org")
+    (insert-file-contents "/data/tasks/inbox-mobile.org")
     (insert (format "\n%s\n" (buffer-substring-no-properties (point-min) (min (point-max) 200)))))
   (condition-case err
       (progn
-        (when (file-exists-p "/data/tasks.org")
+        (when (file-exists-p "/data/tasks/tasks.org")
           (org-mode)
           (let ((ast (org-element-parse-buffer)))
             (let ((headlines (org-element-map ast (quote headline) (lambda (h) t))))

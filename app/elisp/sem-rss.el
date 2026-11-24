@@ -48,15 +48,15 @@ digest LLM requests are not dispatched back-to-back.")
 The initial attempt plus this many retries bound the total number
 of attempts (4 with the default value).")
 
-(defconst sem-rss-dir "/data/morning-read/"
+(defconst sem-rss-dir "/data/org-roam/digest/"
   "Directory where daily digests are stored.")
 
-(defconst sem-rss-archive-dir "/data/archive/"
+(defconst sem-rss-archive-dir "/data/org-roam/digest/archive/"
   "Directory where archived digest files are stored.
 Digest files from previous months are moved into a `YYYY-MM'
 subdirectory of this directory.")
 
-(defconst sem-rss-feeds-file "/data/feeds.org"
+(defconst sem-rss-feeds-file "/data/tasks/feeds.org"
   "Path to feeds configuration file in Org format.")
 
 (defconst sem-rss-feeds-cache-file "/data/.sem-feeds-cache.el"
@@ -66,16 +66,16 @@ subdirectory of this directory.")
 
 (defvar sem-rss-prompts-dir nil
   "Directory containing prompt template files.
-If nil, defaults to /data/prompts/ or SEM_PROMPTS_DIR env var.
+If nil, defaults to /data/tasks/prompts/ or SEM_PROMPTS_DIR env var.
 Set this before loading sem-rss to override the default location.")
 
 (defun sem-rss--get-prompts-dir ()
   "Get the prompts directory.
 Uses sem-rss-prompts-dir if set, otherwise SEM_PROMPTS_DIR env var,
-or defaults to /data/prompts/."
+or defaults to /data/tasks/prompts/."
   (or sem-rss-prompts-dir
       (getenv "SEM_PROMPTS_DIR")
-      "/data/prompts/"))
+      "/data/tasks/prompts/"))
 
 (defvar sem-rss-general-prompt-template nil
   "Template for general RSS digest prompts.

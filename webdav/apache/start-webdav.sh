@@ -102,6 +102,11 @@ if ! command -v htpasswd >/dev/null 2>&1; then
   exit 1
 fi
 
+# The served subtree must be writable by the unprivileged httpd user: Apache
+# DAV writes to a temp file and renames it, which needs directory permissions.
+mkdir -p /data/tasks
+chown -R "${WEBDAV_UID}:${WEBDAV_GID}" /data/tasks
+
 HTPASSWD_FILE="/usr/local/apache2/conf/webdav.htpasswd"
 htpasswd -bc "$HTPASSWD_FILE" "$WEBDAV_USERNAME" "$WEBDAV_PASSWORD"
 

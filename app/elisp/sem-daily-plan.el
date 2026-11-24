@@ -10,7 +10,7 @@
 ;;
 ;; The LLM only returns short structured lines that reference tasks by a
 ;; local ref (T1, T2, ...).  The daemon validates them and renders
-;; /data/daily-plan.org deterministically.  tasks.org is never modified:
+;; /data/tasks/daily-plan.org deterministically.  tasks.org is never modified:
 ;; the plan is a proposal the user acts on from the phone or Emacs.  When the
 ;; LLM call fails, a plan without suggestions is still written.
 
@@ -24,7 +24,7 @@
 (require 'sem-llm)
 (require 'sem-planner)
 
-(defconst sem-daily-plan-file "/data/daily-plan.org"
+(defconst sem-daily-plan-file "/data/tasks/daily-plan.org"
   "Path to the generated daily plan.")
 
 (defconst sem-daily-plan-deadline-horizon-days 7

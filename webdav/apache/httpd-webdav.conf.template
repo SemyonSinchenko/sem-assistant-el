@@ -8,9 +8,11 @@ DavLockDB /tmp/DavLock
   SSLCertificateFile @@WEBDAV_CERT_FILE@@
   SSLCertificateKeyFile @@WEBDAV_KEY_FILE@@
 
-  DocumentRoot "/data"
+  # Only the tasks/settings subtree is served; notes, journal and digests
+  # live in /data/org-roam and are not reachable from WebDAV clients.
+  DocumentRoot "/data/tasks"
 
-  <Directory "/data">
+  <Directory "/data/tasks">
     Options Indexes FollowSymLinks
     AllowOverride None
     Require all granted

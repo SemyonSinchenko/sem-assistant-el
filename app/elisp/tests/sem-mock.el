@@ -220,7 +220,13 @@ Tests must never write to the real /data volume used by the daemon."
             sem-rss-dir
             sem-rss-archive-dir
             sem-rss-feeds-file
-            sem-rss-feeds-cache-file))
+            sem-rss-feeds-cache-file
+            sem-router-inbox-file
+            sem-router-tasks-file
+            sem-router-journal-dir
+            sem-planner-tasks-file
+            sem-daily-plan-file
+            sem-rules-file))
          (snapshot
           (mapcar (lambda (sym)
                     (cons sym (if (boundp sym) (symbol-value sym) :unbound)))
@@ -235,6 +241,12 @@ Tests must never write to the real /data volume used by the daemon."
     (setq sem-rss-archive-dir (expand-file-name "rss-archive" dir))
     (setq sem-rss-feeds-file (expand-file-name "feeds.org" dir))
     (setq sem-rss-feeds-cache-file (expand-file-name ".sem-feeds-cache.el" dir))
+    (setq sem-router-inbox-file (expand-file-name "tasks/inbox-mobile.org" dir))
+    (setq sem-router-tasks-file (expand-file-name "tasks/tasks.org" dir))
+    (setq sem-router-journal-dir (expand-file-name "journal/" dir))
+    (setq sem-planner-tasks-file (expand-file-name "tasks/tasks.org" dir))
+    (setq sem-daily-plan-file (expand-file-name "tasks/daily-plan.org" dir))
+    (setq sem-rules-file (expand-file-name "tasks/rules.org" dir))
     (list :dir dir :snapshot snapshot)))
 
 (defun sem-mock-teardown-test-data-paths (state)

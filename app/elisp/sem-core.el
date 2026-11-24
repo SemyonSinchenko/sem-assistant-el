@@ -19,7 +19,7 @@
 (defconst sem-core-log-file "/data/sem-log.org"
   "Path to the structured log file.")
 
-(defconst sem-core-errors-file "/data/errors.org"
+(defconst sem-core-errors-file "/data/tasks/errors.org"
   "Path to the errors Dead Letter Queue file.")
 
 (defconst sem-core-cursor-file "/data/.sem-cursor.el"
@@ -28,7 +28,7 @@
 (defconst sem-core-retries-file "/data/.sem-retries.el"
   "Path to the retry tracking file for failed LLM requests.")
 
-(defconst sem-core-inbox-file "/data/inbox-mobile.org"
+(defconst sem-core-inbox-file "/data/tasks/inbox-mobile.org"
   "Path to the inbox file synced by Orgzly.")
 
 (defvar sem-core-cron-guard-dir (format "/tmp/data/cron-guards/%s" (emacs-pid))
@@ -928,7 +928,7 @@ ENTRY must start with its headline; text of child headlines is untouched."
   "Move misplaced SCHEDULED/DEADLINE lines in FILE under their headlines.
 Manual maintenance command for task files written before planning lines
 were normalized:
-  emacsclient -s sem-server -e \"(sem-core-repair-planning-lines \\\"/data/tasks.org\\\")\"
+  emacsclient -s sem-server -e \"(sem-core-repair-planning-lines \\\"/data/tasks/tasks.org\\\")\"
 Writes atomically and returns the number of entries changed."
   (let ((changed 0)
         (chunks '()))
