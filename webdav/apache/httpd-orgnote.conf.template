@@ -8,7 +8,11 @@
   # /api prefix is stripped, matching upstream's reverse-proxy layout, so
   # clients use https://@@ORGNOTE_DOMAIN@@/api/v1 as the server address.
   ProxyPreserveHost On
-  ProxyPass /api/ http://orgnote-backend:3000/ upgrade=websocket
+  # Websocket first (more specific path): an idle tunnel would otherwise be
+  # closed after the default 60s timeout, making clients reconnect and
+  # restart their sync over and over.
+  ProxyPass /api/ws/ http://orgnote-backend:3000/ws/ upgrade=websocket timeout=3600
+  ProxyPass /api/ http://orgnote-backend:3000/
   ProxyPassReverse /api/ http://orgnote-backend:3000/
 
   # Note uploads (backend limit is 50 MB per file).
