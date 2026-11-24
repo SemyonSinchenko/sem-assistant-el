@@ -1,4 +1,6 @@
-FROM silex/emacs:master-alpine-ci-eask
+# Pinned Emacs release; the previous master-* tag pulled a new Emacs snapshot
+# (and GnuTLS) on every rebuild. Keep in sync with the local test Emacs.
+FROM silex/emacs:30.2-alpine-ci-eask
 
 # Cron stuff
 RUN mkfifo -m 0666 /var/log/cron.log

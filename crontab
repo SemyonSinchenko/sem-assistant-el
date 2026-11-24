@@ -8,14 +8,19 @@
 # Git pre-pull reconciliation - every 5 minutes
 */5 * * * *	root	emacsclient -s sem-server -e "(sem-git-sync-org-roam-prepull)"
 
-# Inbox purge - daily at 4:00 AM (only time inbox-mobile.org is written)
-0 4 * * *	root	emacsclient -s sem-server -e "(sem-core-purge-inbox)"
+# Inbox purge - daily at 4:15 AM (only time inbox-mobile.org is written).
+# Offset from the */30 inbox run at 4:00 so the two jobs do not overlap.
+15 4 * * *	root	emacsclient -s sem-server -e "(sem-core-purge-inbox)"
 
 # Elfeed update - four times before digest generation (5AM, 6AM, 7AM, 8AM)
 0 5 * * *	root	emacsclient -s sem-server -e "(sem-rss-elfeed-update-cron)"
 0 6 * * *	root	emacsclient -s sem-server -e "(sem-rss-elfeed-update-cron)"
 0 7 * * *	root	emacsclient -s sem-server -e "(sem-rss-elfeed-update-cron)"
 0 8 * * *	root	emacsclient -s sem-server -e "(sem-rss-elfeed-update-cron)"
+
+# Daily plan - daily at 7:00 AM: picks today's tasks from overdue items,
+# deadlines and backlog and writes /data/daily-plan.org (tasks.org untouched)
+0 7 * * *	root	emacsclient -s sem-server -e "(sem-daily-plan-generate)"
 
 # RSS morning digest - daily at 9:30 AM (after all elfeed updates complete)
 30 9 * * *	root	emacsclient -s sem-server -e "(sem-rss-generate-morning-digest)"

@@ -4,8 +4,9 @@
 SEM Assistant is a self-hosted Emacs daemon for single-user personal operations.
 It receives mobile captures via WebDAV, routes them through deterministic Elisp
 flows, uses remote LLM calls for bounded text transformations, and writes results
-to your Org files. In practice, it handles three main loops: inbox processing,
-URL-to-org-roam capture, and periodic git sync for org-roam notes.
+to your Org files. In practice, it handles four main loops: inbox processing,
+URL-to-org-roam capture, a morning day plan, and periodic git sync for org-roam
+notes.
 
 * Motivation
 The core idea is simple: capture fast on mobile, process safely on a remote box,
@@ -27,10 +28,50 @@ pipeline.
   capture even without =:link:=.
 - Unknown headline types are skipped and logged.
 
+** Daily plan
+- Every day at 07:00 the daemon writes =/data/daily-plan.org=.
+- It reads open tasks from =/data/tasks.org= (overdue, scheduled today,
+  deadlines within 7 days, unscheduled backlog) plus =/data/rules.org= and asks
+  the LLM to pick today's tasks with time blocks, a reason and a first step.
+- Overdue tasks that do not fit get a "reschedule to <date>" or "drop"
+  suggestion. =tasks.org= itself is never modified by the daily plan.
+- If the LLM call fails, the file still lists the tasks without suggestions.
+- Manual trigger:
+  #+begin_src sh
+  docker compose exec emacs emacsclient -s sem-server -e "(sem-daily-plan-generate)"
+  #+end_src
+
+** Scheduling rules
+=/data/rules.org= is free text passed to task normalization, the planner and
+the daily plan. Concrete rules work best, for example working hours, days off,
+per-category windows ("family tasks after 18:00"), a daily workload limit, and
+which kinds of tasks to batch together.
+
+** Task format
+Generated tasks carry their category as a real headline tag (=:work:= etc.),
+an =:EFFORT:= estimate, and SCHEDULED/DEADLINE on the line directly below the
+headline, the only place Org agenda and org-element recognize them. Tasks
+written by older versions had SCHEDULED after the property drawer; the planner
+still reads those, and they can be fixed once with:
+#+begin_src sh
+docker compose exec emacs emacsclient -s sem-server \
+  -e '(sem-core-repair-planning-lines "/data/tasks.org")'
+#+end_src
+
+** LLM provider
+- =LLM_PROVIDER=: =deepseek= (default) or =openrouter= (legacy, for rollback).
+- =DEEPSEEK_API_KEY= (or the generic =LLM_API_KEY=).
+- =LLM_MODEL= (medium tier: URL capture, RSS digest, planning, daily plan) and
+  =LLM_WEAK_MODEL= (Pass 1 task normalization; falls back to =LLM_MODEL=).
+- =LLM_REASONING_EFFORT= / =LLM_WEAK_REASONING_EFFORT=: =none= (default,
+  thinking disabled), =low=, =high= or =max=. DeepSeek thinks at =high= by
+  default, which can take minutes for these bounded transformations.
+
 ** Path contract
 - Shared runtime root: =/data=.
 - Scheduler rules file: =/data/rules.org=.
 - Task output file: =/data/tasks.org=.
+- Daily plan file: =/data/daily-plan.org=.
 - org-roam repository root: =/data/org-roam=.
 - org-roam notes subtree: =/data/org-roam/org-files=.
 
@@ -71,6 +112,10 @@ pipeline.
    #+begin_src sh
    docker compose --profile certbot up -d certbot
    #+end_src
+   =CERTBOT_STAGING= only affects the first issuance of a lineage; renewals
+   always use the CA recorded in the lineage, so a staging flag left on cannot
+   replace a production certificate. The renewal loop warns when a lineage
+   still uses the staging CA.
 3. Confirm certificate files exist for both lineages under
    =/etc/letsencrypt/live/$DOMAIN/{fullchain.pem,privkey.pem}=.
 4. Deploy WebDAV + organice endpoint:
@@ -108,10 +153,13 @@ Security model is "LLM as untrusted component".
 - Text inside =#+begin_sensitive= / =#+end_sensitive= is not sent to the LLM.
 - Sensitive payload is masked before model calls and restored afterward.
 
-** Planner context pruning
-- Planner receives reduced/anonymized context instead of full raw task corpus.
-- The goal is to minimize unnecessary data exposure while preserving scheduling
-  signal.
+** Planner context
+- The planner and the daily plan receive task titles, categories, priorities,
+  efforts and timestamps of open tasks within a 14-day window. Task bodies are
+  not sent to the planner; the daily plan sends a short body excerpt with
+  sensitive blocks removed.
+- Titles are already sent to the same provider during task normalization, so
+  hiding them from planning protected little while making scheduling blind.
 
 ** Trust boundaries
 - LLM output is treated as untrusted text and validated before acceptance.

@@ -298,13 +298,16 @@
     (cl-letf (((symbol-function 'sem-git-sync--run-command)
                (lambda (_program args &optional _dir)
                  (cond
-                  ((equal args '("pull" "--rebase" "origin" "main"))
+                  ((equal args '("pull" "--rebase" "--autostash" "origin" "main"))
                    (cons 1 "CONFLICT (content): Merge conflict in file"))
                   ((equal args '("push" "origin"))
                    (cons 1 "Permission denied (publickey)."))
                   (t (cons 0 "")))))
               ((symbol-function 'sem-core-log)
                (lambda (_module _event _status message &optional _tokens)
+                 (push message logged-messages)))
+              ((symbol-function 'sem-core-log-error)
+               (lambda (_module _event message &rest _)
                  (push message logged-messages))))
       (should-not (sem-git-sync--pull-before-push "origin" "main"))
       (should-not (sem-git-sync--push-with-classification "origin"))
@@ -327,7 +330,7 @@
                         (equal args '("rev-parse" "--git-dir")))
                    (cons 0 ".git\n"))
                   ((and (string= program "git")
-                        (equal args '("pull" "--rebase" "origin" "main")))
+                        (equal args '("pull" "--rebase" "--autostash" "origin" "main")))
                    (setq pull-called t)
                    (cons 0 "Already up to date."))
                   ((and (string= program "git")
@@ -367,7 +370,7 @@
                         (equal args '("rev-parse" "--git-dir")))
                    (cons 0 ".git\n"))
                   ((and (string= program "git")
-                        (equal args '("pull" "--rebase" "origin" "main")))
+                        (equal args '("pull" "--rebase" "--autostash" "origin" "main")))
                    (cons 1 "Could not resolve host: github.com"))
                   (t (cons 0 "")))))
               ((symbol-function 'sem-git-sync--sync-state)
@@ -556,6 +559,27 @@
   "Run all git-sync tests."
   (interactive)
   (ert-run-tests-batch "^sem-git-sync-test"))
+
+;;; Rebase recovery
+
+(ert-deftest sem-git-sync-test-failed-pull-aborts-rebase ()
+  "Test a conflicting pull aborts the interrupted rebase."
+  (let ((commands '()))
+    (cl-letf (((symbol-function 'sem-git-sync--run-command)
+               (lambda (_program args &optional _dir)
+                 (push args commands)
+                 (cond
+                  ((equal (car args) "pull")
+                   (cons 1 "CONFLICT (content): Merge conflict in note.org"))
+                  ((equal args '("rev-parse" "--git-path" "rebase-merge"))
+                   (cons 0 ".git/rebase-merge\n"))
+                  (t (cons 0 "")))))
+              ((symbol-function 'file-directory-p) (lambda (_) t))
+              ((symbol-function 'sem-core-log) (lambda (&rest _) nil))
+              ((symbol-function 'sem-core-log-error) (lambda (&rest _) nil)))
+      (should-not (sem-git-sync--pull-before-push "origin" "main"))
+      (should (member '("pull" "--rebase" "--autostash" "origin" "main") commands))
+      (should (member '("rebase" "--abort") commands)))))
 
 (provide 'sem-git-sync-test)
 ;;; sem-git-sync-test.el ends here

@@ -153,18 +153,62 @@ Returns one of: conflict, auth, network, other."
       'network)
      (t 'other))))
 
+(defun sem-git-sync--rebase-in-progress-p ()
+  "Return non-nil when an interrupted rebase is left in the repository."
+  (cl-some
+   (lambda (state-dir)
+     (let ((result (sem-git-sync--run-command
+                    "git" (list "rev-parse" "--git-path" state-dir)
+                    sem-git-sync-org-roam-dir)))
+       (and (= (car result) 0)
+            (not (string-empty-p (string-trim (cdr result))))
+            (file-directory-p
+             (expand-file-name (string-trim (cdr result)) sem-git-sync-org-roam-dir)))))
+   '("rebase-merge" "rebase-apply")))
+
+(defun sem-git-sync--abort-rebase-if-needed ()
+  "Abort an interrupted rebase so the repository returns to its branch.
+A conflicting `pull --rebase' leaves a detached HEAD behind; without an
+abort every later sync fails until someone fixes the repo by hand.
+Returns non-nil when a rebase was aborted."
+  (when (sem-git-sync--rebase-in-progress-p)
+    (let ((abort-result (sem-git-sync--run-command
+                         "git" '("rebase" "--abort") sem-git-sync-org-roam-dir)))
+      (sem-core-log "git-sync" "GIT-SYNC" (if (= (car abort-result) 0) "OK" "FAIL")
+                    (format "Aborted interrupted rebase: %s"
+                            (string-trim (cdr abort-result)))
+                    nil)
+      t)))
+
+(defun sem-git-sync--pull-rebase (remote branch)
+  "Run `git pull --rebase --autostash' for REMOTE and BRANCH.
+Uncommitted notes are stashed around the rebase.  When the rebase fails
+\(for example on a conflict) it is aborted so the repository stays usable.
+Returns the (EXIT-CODE . OUTPUT) cons of the pull."
+  (let ((pull-result (sem-git-sync--run-command
+                      "git" (list "pull" "--rebase" "--autostash" remote branch)
+                      sem-git-sync-org-roam-dir)))
+    (unless (= (car pull-result) 0)
+      (sem-git-sync--abort-rebase-if-needed))
+    pull-result))
+
 (defun sem-git-sync--pull-before-push (remote branch)
   "Run pull reconciliation for REMOTE and BRANCH.
-Returns t on success. On failure, logs classified failure and returns nil."
-  (let* ((pull-result (sem-git-sync--run-command
-                       "git" (list "pull" "--rebase" remote branch) sem-git-sync-org-roam-dir))
+Returns t on success. On failure, logs classified failure and returns nil.
+A conflict is also recorded in errors.org because it needs manual resolution."
+  (let* ((pull-result (sem-git-sync--pull-rebase remote branch))
          (pull-output (cdr pull-result)))
     (if (= (car pull-result) 0)
         t
       (let ((classification (sem-git-sync--classify-git-failure pull-output)))
-        (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
-                      (format "Pull failed (%s): %s" classification (string-trim pull-output))
-                      nil)
+        (if (eq classification 'conflict)
+            (sem-core-log-error "git-sync" "GIT-SYNC"
+                                "Pull failed (conflict): rebase aborted, resolve the org-roam repo manually"
+                                (string-trim pull-output)
+                                nil)
+          (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
+                        (format "Pull failed (%s): %s" classification (string-trim pull-output))
+                        nil))
         nil))))
 
 (defun sem-git-sync--push-with-classification (remote)
@@ -241,10 +285,13 @@ nil if an existing agent was reused. Returns nil on failure."
                   (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
                                 (format "Failed to add SSH key: %s" (cdr add-result))
                                 nil)
+                  ;; Do not leave a keyless agent behind for later cycles to reuse.
+                  (sem-git-sync--teardown-ssh agent-spawned)
                   nil))
             (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
                           (format "SSH key not found at %s" sem-git-sync-ssh-key)
                           nil)
+            (sem-git-sync--teardown-ssh agent-spawned)
             nil)))
     (error
      (sem-core-log-error "git-sync" "GIT-SYNC"
@@ -263,6 +310,8 @@ Handles nil SSH_AGENT_PID gracefully."
       (if (and agent-pid (not (string-empty-p agent-pid)))
           (progn
             (sem-git-sync--run-command "ssh-agent" '("-k"))
+            (setenv "SSH_AUTH_SOCK" nil)
+            (setenv "SSH_AGENT_PID" nil)
             (sem-core-log "git-sync" "GIT-SYNC" "OK"
                           (format "Killed ssh-agent PID=%s" agent-pid)
                           nil))
@@ -313,6 +362,8 @@ Uses unwind-protect to ensure agent teardown runs even on failure."
                                   (string-trim (cdr git-check)))
                           nil)
              (cl-return-from sem-git-sync-org-roam nil)))
+
+        (sem-git-sync--abort-rebase-if-needed)
 
         (let ((initial-state (sem-git-sync--sync-state)))
           (unless (plist-get initial-state :ok)
@@ -435,6 +486,8 @@ Returns t on success and nil on failure."
                           nil)
              (cl-return-from sem-git-sync-org-roam-prepull nil)))
 
+        (sem-git-sync--abort-rebase-if-needed)
+
         (let ((state (sem-git-sync--sync-state)))
           (unless (plist-get state :ok)
             (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
@@ -450,8 +503,7 @@ Returns t on success and nil on failure."
             (unwind-protect
                 (let* ((remote (plist-get state :remote))
                        (branch (plist-get state :branch))
-                       (pull-result (sem-git-sync--run-command
-                                     "git" (list "pull" "--rebase" remote branch) sem-git-sync-org-roam-dir))
+                       (pull-result (sem-git-sync--pull-rebase remote branch))
                        (pull-output (string-trim (cdr pull-result))))
                   (if (= (car pull-result) 0)
                       (progn

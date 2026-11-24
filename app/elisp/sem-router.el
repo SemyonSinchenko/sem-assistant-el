@@ -505,9 +505,12 @@ until the final outcome."
                  (sem-core-log "router" "INBOX-ITEM" "DLQ"
                                (format "Security preflight failed, moved to DLQ: %s" title)
                                nil)
+                 ;; The body is withheld: a malformed sensitive block means the
+                 ;; secret boundaries are unknown, so nothing of it may be logged.
                  (sem-core-log-error "security" "INBOX-ITEM"
                                      (error-message-string sanitize-err)
-                                     body
+                                     (format "[body withheld: %d chars, sensitive block preflight failed] %s"
+                                             (length body) title)
                                      nil
                                      (list :priority "[#A]" :tags '("security")))
                  (sem-router--runtime-message
@@ -535,7 +538,10 @@ until the final outcome."
                         (success nil)
                         (headline-context context)
                         (response-valid nil))
-                   (if (/= callback-batch-id sem-core--batch-id)
+                   ;; A batch closes once planning fired (barrier or watchdog);
+                   ;; a late result must not land in an already planned temp
+                   ;; file. The item stays unprocessed and is retried.
+                   (if (not (sem-core--batch-open-p callback-batch-id))
                        (progn
                          (sem-router--runtime-message
                           "task-callback" "STALE"
@@ -558,7 +564,11 @@ until the final outcome."
                                (sem-router--validate-task-response restored-response injected-uuid))
                          (if response-valid
                              (let ((normalized-response
-                                    (sem-router--normalize-task-title-lowercase restored-response)))
+                                    (sem-router--normalize-task-title-lowercase
+                                     (if (sem-router--capture-has-explicit-schedule-p
+                                          (plist-get context :headline))
+                                         (sem-router--mark-fixed-schedule restored-response)
+                                       restored-response))))
                                (sem-router--with-tasks-write-lock
                                 (plist-get context :headline)
                                 (lambda ()
@@ -573,10 +583,12 @@ until the final outcome."
                                         (setq headline-context (plist-put headline-context :security-blocks nil))
                                         (setq success t))
                                     (progn
+                                      ;; Log the masked LLM output, never the
+                                      ;; restored text with sensitive content.
                                       (sem-core-log-error "router" "INBOX-ITEM"
                                                           "Failed to write task to temp file"
                                                           headline-title
-                                                          normalized-response)
+                                                          response)
                                       (setq success nil)))
                                   (when callback
                                     (funcall callback success headline-context)))
@@ -588,7 +600,7 @@ until the final outcome."
                            (sem-core-log-error "router" "INBOX-ITEM"
                                                "Malformed LLM output for task (UUID mismatch or missing)"
                                                headline-title
-                                               restored-response)
+                                               response)
                            (sem-router--runtime-message
                             "task-validate" "FAIL"
                             (sem-router--runtime-correlation-fields callback-batch-id headline-hash))
@@ -756,7 +768,9 @@ returns RESPONSE unchanged."
   "Lowercase the first TODO headline title in RESPONSE.
 
 Only the title text after the TODO keyword and optional priority marker is
-lowercased. Non-title content remains unchanged."
+lowercased. Words containing a digit are identifiers (ticket numbers such
+as INC-7781, quarters such as Q2) and keep their case. Non-title content
+remains unchanged."
   (with-temp-buffer
     (insert response)
     (goto-char (point-min))
@@ -769,7 +783,12 @@ lowercased. Non-title content remains unchanged."
             (headline-title (match-string 3)))
         (delete-region line-start line-end)
         (goto-char line-start)
-        (insert (concat headline-prefix (downcase headline-title)))))
+        (insert (concat headline-prefix
+                        (replace-regexp-in-string
+                         "[^ \t]+"
+                         (lambda (word)
+                           (if (string-match-p "[0-9]" word) word (downcase word)))
+                         headline-title t t)))))
     (buffer-string)))
 
 (defun sem-router--validate-and-normalize-priority (response)
@@ -820,10 +839,26 @@ replaces it with `[#C]`. Returns normalized response string."
            (format "%s %s %s" todo-prefix normalized-priority cleaned-rest)))))
     (buffer-string)))
 
+(defconst sem-router-max-effort-minutes (* 4 60)
+  "Upper bound in minutes for an :EFFORT:-derived SCHEDULED block.")
+
+(defun sem-router--effort-minutes (response)
+  "Return the :EFFORT: of RESPONSE in minutes, or nil when absent/invalid.
+Accepts H:MM and plain minute values; the result is capped at
+`sem-router-max-effort-minutes'."
+  (when (string-match "^:EFFORT:[ \t]*\\([0-9]+\\)\\(?::\\([0-9]\\{2\\}\\)\\)?[ \t]*$" response)
+    (let* ((first (string-to-number (match-string 1 response)))
+           (minutes (if (match-string 2 response)
+                        (+ (* 60 first) (string-to-number (match-string 2 response)))
+                      first)))
+      (when (> minutes 0)
+        (min minutes sem-router-max-effort-minutes)))))
+
 (defun sem-router--normalize-scheduled-duration (response)
   "Normalize SCHEDULED duration in RESPONSE when end time is absent.
 
-When SCHEDULED has a start time but no end time, inject a 30-minute end time.
+When SCHEDULED has a start time but no end time, inject an end time based on
+the :EFFORT: estimate, or 30 minutes when there is none.
 Unsupported or already-ranged SCHEDULED lines are preserved unchanged."
   (with-temp-buffer
     (insert response)
@@ -844,7 +879,8 @@ Unsupported or already-ranged SCHEDULED lines are preserved unchanged."
                  (month (string-to-number (substring date-part 5 7)))
                  (day (string-to-number (substring date-part 8 10)))
                  (start-time (encode-time 0 start-minute start-hour day month year t))
-                 (end-time (time-add start-time (seconds-to-time (* 30 60))))
+                 (duration-minutes (or (sem-router--effort-minutes response) 30))
+                 (end-time (time-add start-time (seconds-to-time (* duration-minutes 60))))
                  (end-hour (format-time-string "%H" end-time t))
                  (end-minute (format-time-string "%M" end-time t))
                  (normalized-content
@@ -858,6 +894,60 @@ Unsupported or already-ranged SCHEDULED lines are preserved unchanged."
             (insert (format "SCHEDULED: <%s>" normalized-content))))))
     (buffer-string)))
 
+(defun sem-router--ensure-category-headline-tag (response)
+  "Add the :FILETAGS: category of RESPONSE as a real headline tag.
+
+Org does not treat a :FILETAGS: property inside a headline drawer as a tag,
+so without this the category is invisible to agenda tag filters and to the
+planner.  The tag is appended to the first headline's tag group when absent.
+Returns the updated response string."
+  (with-temp-buffer
+    (insert response)
+    (goto-char (point-min))
+    (let ((category (when (re-search-forward "^:FILETAGS:[ \t]*:\\([[:word:]]+\\):" nil t)
+                      (match-string 1))))
+      (goto-char (point-min))
+      (when (and category
+                 (re-search-forward "^\\*+[ \t]+TODO[ \t].*$" nil t))
+        (let* ((line-start (match-beginning 0))
+               (line-end (match-end 0))
+               (line (match-string 0)))
+          (cond
+           ((string-match-p (format ":%s:" (regexp-quote category)) line)
+            nil)
+           ((string-match "[ \t]+\\(:\\(?:[[:alnum:]_@#%]+:\\)+\\)[ \t]*$" line)
+            (let ((tags (match-string 1 line))
+                  (before (substring line 0 (match-beginning 0))))
+              (delete-region line-start line-end)
+              (goto-char line-start)
+              (insert before " " tags category ":")))
+           (t
+            (goto-char line-end)
+            (skip-chars-backward " \t")
+            (delete-region (point) line-end)
+            (insert " :" category ":"))))))
+    (buffer-string)))
+
+(defun sem-router--capture-has-explicit-schedule-p (headline)
+  "Return non-nil when the inbox HEADLINE already carries a SCHEDULED timestamp.
+A schedule set by the user on the phone is an explicit decision that the
+planner must not move."
+  (let ((body (or (plist-get headline :body) "")))
+    (string-match-p "^[ \t]*\\(?:DEADLINE:.*\\)?SCHEDULED:[ \t]*<" body)))
+
+(defun sem-router--mark-fixed-schedule (response)
+  "Add a :SEM_FIXED_SCHEDULE: property to the first drawer of RESPONSE."
+  (with-temp-buffer
+    (insert response)
+    (goto-char (point-min))
+    (when (and (re-search-forward "^:PROPERTIES:" nil t)
+               (not (save-excursion
+                      (re-search-forward "^:SEM_FIXED_SCHEDULE:" nil t)))
+               (re-search-forward "^:END:" nil t))
+      (beginning-of-line)
+      (insert ":SEM_FIXED_SCHEDULE: t\n"))
+    (buffer-string)))
+
 (defun sem-router--normalize-task-response (response)
   "Apply all task-response normalization rules to RESPONSE.
 
@@ -866,7 +956,10 @@ Returns normalized response string."
   (let* ((headline-normalized (sem-router--normalize-todo-headline response))
          (tag-normalized (sem-router--validate-and-normalize-tag headline-normalized))
          (priority-normalized (sem-router--validate-and-normalize-priority tag-normalized))
-         (schedule-normalized (sem-router--normalize-scheduled-duration priority-normalized)))
+         (category-tagged (sem-router--ensure-category-headline-tag priority-normalized))
+         ;; Org only honors planning info directly under the headline.
+         (planning-placed (sem-core-normalize-planning-line category-tagged))
+         (schedule-normalized (sem-router--normalize-scheduled-duration planning-placed)))
     schedule-normalized))
 
 (defun sem-router--temp-file-path (&optional batch-id)
@@ -893,7 +986,8 @@ Creates the target file if it doesn't exist.
 Appends the task entry to the file.
 
 Returns t on success, nil on failure."
-  (condition-case err
+  (cl-block sem-router--write-task-to-file
+    (condition-case err
       (let* ((normalized (sem-router--normalize-task-response response))
              (_ (require 'sem-security))
              (sanitized (sem-security-sanitize-urls normalized))
@@ -923,12 +1017,13 @@ Returns t on success, nil on failure."
           (write-region (point-min) (point-max) target-file nil 'silent))
 
         t)
-    (error
-     (sem-core-log-error "router" "INBOX-ITEM"
-                         (format "Failed to write task: %s" (error-message-string err))
-                         response
-                         nil)
-     nil)))
+      (error
+       ;; RESPONSE has sensitive blocks restored, so it is not logged.
+       (sem-core-log-error "router" "INBOX-ITEM"
+                           (format "Failed to write task: %s" (error-message-string err))
+                           (format "[task text withheld: %d chars]" (length (or response "")))
+                           nil)
+       nil))))
 
 (defun sem-router--build-journal-entry (headline ingested-at)
   "Build an intermediate journal entry from HEADLINE and INGESTED-AT.
@@ -1169,16 +1264,23 @@ This is called by sem-core-process-inbox."
                             (lambda (filepath context)
                              "Callback for async URL capture: success, retry, DLQ, stale batches."
                              (let ((deferred nil))
-                               (if (/= dispatch-batch-id sem-core--batch-id)
+                               (if (not (sem-core--batch-open-p dispatch-batch-id))
                                    (progn
                                     (sem-router--runtime-message
                                      "url-callback" "STALE"
                                      (append (sem-router--runtime-correlation-fields dispatch-batch-id hash)
                                              (list (cons "active-batch" sem-core--batch-id))))
                                     (sem-core-log "router" "INBOX-ITEM" "SKIP"
-                                                  (format "Ignoring stale URL callback: callback-batch=%d active-batch=%d url=%s"
-                                                          dispatch-batch-id sem-core--batch-id url)
+                                                  (format "Late URL callback: callback-batch=%d active-batch=%d saved=%s url=%s"
+                                                          dispatch-batch-id sem-core--batch-id
+                                                          (if filepath "yes" "no") url)
                                                   nil)
+                                    ;; The node is already on disk: record it so the
+                                    ;; next batch does not capture the URL again.
+                                    (when filepath
+                                      (sem-core--clear-retry hash)
+                                      (sem-router--mark-processed hash))
+                                    ;; No-op for a closed batch; kept for symmetry.
                                     (when (fboundp 'sem-core--batch-barrier-check)
                                       (sem-core--batch-barrier-check dispatch-batch-id)))
                                 (if filepath
@@ -1226,6 +1328,9 @@ This is called by sem-core-process-inbox."
                                                                                         (cons "max" 3))))))))
                                    (when (and (not deferred) (fboundp 'sem-core--batch-barrier-check))
                                      (sem-core--batch-barrier-check dispatch-batch-id)))))))))
+                      ;; Each URL capture holds one pending slot until its
+                      ;; terminal callback releases it via the barrier check.
+                      (setq sem-core--pending-callbacks (1+ sem-core--pending-callbacks))
                       (sem-url-capture-process
                        url
                        url-completion-callback)))

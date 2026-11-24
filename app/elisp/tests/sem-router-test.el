@@ -642,7 +642,7 @@ Task description here."))
 :END:
 Body."))
     (let ((normalized (sem-router--normalize-task-response response)))
-      (should (string-match-p "^\\* TODO \\[#C\\] Review pull request #452 for authentication module$"
+      (should (string-match-p "^\\* TODO \\[#C\\] Review pull request #452 for authentication module :work:$"
                               (car (split-string normalized "\n")))))))
 
 (ert-deftest sem-router-test-headline-normalization-repairs-priority-before-todo ()
@@ -654,7 +654,7 @@ Body."))
 :END:
 Body."))
     (let ((normalized (sem-router--normalize-task-response response)))
-      (should (string-match-p "^\\* TODO \\[#A\\] Ping ops about INC-7781$"
+      (should (string-match-p "^\\* TODO \\[#A\\] Ping ops about INC-7781 :work:$"
                               (car (split-string normalized "\n")))))))
 
 (ert-deftest sem-router-test-task-title-lowercase-normalizes-mixed-case ()
@@ -1922,6 +1922,92 @@ barrier for the old batch id only."
       (should-not retry-counted)
       ;; Only the old batch's barrier is resolved.
       (should (equal barrier-calls (list 8))))))
+
+;;; Regression tests for batch accounting and title normalization
+
+(ert-deftest sem-router-test-url-dispatch-holds-pending-slot ()
+  "Test URL captures are counted in the batch barrier like tasks."
+  (let ((sem-core--batch-id 50)
+        (sem-core--pending-callbacks 1)
+        (pending-at-dispatch nil))
+    (cl-letf (((symbol-function 'sem-router--parse-headlines)
+               (lambda ()
+                 (list (list :title "https://example.com/a" :tags '("link")
+                             :body nil :link "https://example.com/a" :hash "url-hash"))))
+              ((symbol-function 'sem-router--is-processed) (lambda (_) nil))
+              ((symbol-function 'sem-core-log) (lambda (&rest _) nil))
+              ((symbol-function 'sem-url-capture-process)
+               (lambda (_url _callback)
+                 (setq pending-at-dispatch sem-core--pending-callbacks)
+                 t)))
+      (sem-router-process-inbox 50)
+      (should (= pending-at-dispatch 2))
+      (should (= sem-core--pending-callbacks 2)))))
+
+(ert-deftest sem-router-test-late-url-success-marks-processed ()
+  "Test a URL saved after its batch closed is still marked processed."
+  (let ((sem-core--batch-id 51)
+        (sem-core--pending-callbacks 1)
+        (sem-core--planning-fired-batch nil)
+        (marked nil))
+    (cl-letf (((symbol-function 'sem-router--parse-headlines)
+               (lambda ()
+                 (list (list :title "https://example.com/b" :tags '("link")
+                             :body nil :link "https://example.com/b" :hash "late-hash"))))
+              ((symbol-function 'sem-router--is-processed) (lambda (_) nil))
+              ((symbol-function 'sem-router--mark-processed)
+               (lambda (hash) (push hash marked)))
+              ((symbol-function 'sem-core--clear-retry) (lambda (&rest _) nil))
+              ((symbol-function 'sem-core-log) (lambda (&rest _) nil))
+              ((symbol-function 'sem-url-capture-process)
+               (lambda (_url callback)
+                 ;; The batch closes (watchdog) before the node is saved.
+                 (setq sem-core--planning-fired-batch 51)
+                 (funcall callback "/tmp/node.org" (list :url "https://example.com/b"))
+                 t)))
+      (sem-router-process-inbox 51)
+      (should (equal marked '("late-hash"))))))
+
+(ert-deftest sem-router-test-task-title-lowercase-keeps-identifiers ()
+  "Test identifiers containing digits keep their case when lowercasing titles."
+  (let* ((response "* TODO [#A] Ping OPS about INC-7781 before Q2\n:PROPERTIES:\n:END:\n")
+         (normalized (sem-router--normalize-task-title-lowercase response)))
+    (should (string-match-p "^\\* TODO \\[#A\\] ping ops about INC-7781 before Q2$"
+                            (car (split-string normalized "\n"))))))
+
+(ert-deftest sem-router-test-category-becomes-headline-tag ()
+  "Test the :FILETAGS: category is added as a real headline tag once."
+  (let ((plain "* TODO [#B] call vendor\n:PROPERTIES:\n:FILETAGS: :family:\n:END:\n")
+        (tagged "* TODO [#B] call vendor :urgent:\n:PROPERTIES:\n:FILETAGS: :family:\n:END:\n"))
+    (should (string-match-p "^\\* TODO \\[#B\\] call vendor :family:$"
+                            (sem-router--ensure-category-headline-tag plain)))
+    (should (string-match-p "^\\* TODO \\[#B\\] call vendor :urgent:family:$"
+                            (sem-router--ensure-category-headline-tag tagged)))
+    (let ((once (sem-router--ensure-category-headline-tag plain)))
+      (should (string= once (sem-router--ensure-category-headline-tag once))))))
+
+(ert-deftest sem-router-test-scheduled-duration-uses-effort ()
+  "Test a SCHEDULED start without end time uses the :EFFORT: estimate."
+  (let ((response "* TODO task\n:PROPERTIES:\n:EFFORT: 1:30\n:END:\nSCHEDULED: <2026-03-20 Fri 09:00>\n"))
+    (should (string-match-p "SCHEDULED: <2026-03-20 Fri 09:00-10:30>"
+                            (sem-router--normalize-scheduled-duration response)))))
+
+(ert-deftest sem-router-test-explicit-capture-schedule-is-marked-fixed ()
+  "Test a capture with its own SCHEDULED gets the fixed-schedule property."
+  (should (sem-router--capture-has-explicit-schedule-p
+           '(:body "SCHEDULED: <2026-03-20 Fri>\nDetails")))
+  (should-not (sem-router--capture-has-explicit-schedule-p '(:body "tomorrow 9am")))
+  (should (string-match-p "^:SEM_FIXED_SCHEDULE: t\n:END:"
+                          (sem-router--mark-fixed-schedule
+                           "* TODO x\n:PROPERTIES:\n:ID: 1\n:END:\n"))))
+
+(ert-deftest sem-router-test-normalization-moves-planning-under-headline ()
+  "Test SCHEDULED emitted after the drawer is moved to the planning line."
+  (let* ((response "* TODO [#B] call vendor\n:PROPERTIES:\n:ID: 1\n:FILETAGS: :work:\n:EFFORT: 0:45\n:END:\nBody\nSCHEDULED: <2026-03-20 Fri 09:00>\n")
+         (normalized (sem-router--normalize-task-response response)))
+    (should (string-prefix-p
+             "* TODO [#B] call vendor :work:\nSCHEDULED: <2026-03-20 Fri 09:00-09:45>\n:PROPERTIES:"
+             normalized))))
 
 (provide 'sem-router-test)
 ;;; sem-router-test.el ends here

@@ -143,6 +143,14 @@ For non-trafilatura calls, passes through to original call-process."
         sem-mock-trafilatura-exit-code)
     (apply #'call-process--original command args)))
 
+(defun sem-mock-url-fetch-async (fetch-fn)
+  "Return a synchronous stand-in for `sem-url-capture--fetch-url-async'.
+FETCH-FN has the signature of `sem-url-capture--fetch-url' (URL &optional
+TIMEOUT) and returns the fetch result plist, which is handed to the
+callback immediately."
+  (lambda (url timeout callback)
+    (funcall callback (funcall fetch-fn url timeout))))
+
 (defun sem-mock-trafilatura-reset ()
   "Reset trafilatura mocks to original behavior."
   (setq sem-mock-trafilatura-output nil)
@@ -175,6 +183,15 @@ For non-trafilatura calls, passes through to original call-process."
   (sem-mock-gptel-reset)
   (sem-mock-trafilatura-reset)
   (sem-mock-org-roam-reset))
+
+(defun sem-mock--reset-batch-state (&rest _)
+  "Reset daemon-global batch bookkeeping before each ERT test.
+Tests let-bind batch IDs, so a planning-fired marker left by a previous test
+would otherwise make a reused batch ID look already closed."
+  (when (boundp 'sem-core--planning-fired-batch)
+    (setq sem-core--planning-fired-batch nil)))
+
+(advice-add 'ert-run-test :before #'sem-mock--reset-batch-state)
 
 (defun sem-mock-temp-file (content)
   "Create a temporary file with CONTENT.

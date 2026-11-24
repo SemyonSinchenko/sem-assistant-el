@@ -7,7 +7,7 @@ Guidance for agentic coding agents operating in this repository.
 ## Project Overview
 
 A self-hosted Emacs daemon (Docker) that autonomously processes Org inbox notes
-and RSS feeds via LLM (OpenRouter/gptel). All logic is written in Emacs Lisp.
+and RSS feeds via LLM (DeepSeek by default, OpenRouter as legacy; via gptel). All logic is written in Emacs Lisp.
 Source lives in `app/elisp/`. Tests live in `app/elisp/tests/`.
 
 ---
@@ -78,6 +78,8 @@ app/elisp/              Source modules (load order matters — see init.el)
   sem-router.el         Inbox parsing and routing
   sem-url-capture.el    URL → org-roam pipeline
   sem-rss.el            RSS/arXiv digest generation
+  sem-planner.el        Pass 2 scheduling of new tasks
+  sem-daily-plan.el     Morning day plan (/data/daily-plan.org)
   sem-git-sync.el       Automated org-roam → GitHub sync
   tests/                ERT test suite
     sem-mock.el         Shared mock helpers (load first)
@@ -189,7 +191,7 @@ Use `sem-core-log-error` for failures (also writes to `errors.org`):
 ```
 
 Valid MODULE values: `core`, `router`, `rss`, `url-capture`, `security`, `llm`,
-`elfeed`, `purge`, `init`, `git-sync`.
+`elfeed`, `purge`, `init`, `git-sync`, `planner`.
 
 Valid STATUS values: `OK`, `RETRY`, `DLQ`, `SKIP`, `FAIL`.
 

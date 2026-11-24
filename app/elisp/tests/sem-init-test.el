@@ -73,7 +73,7 @@ that sem-git-sync is among them and that sem-git-sync-org-roam is fbound."
         (when (featurep module)
           (setq features (delq module features)))))))
 
-(ert-deftest sem-init-test-resolve-openrouter-models-deduplicates-when-equal ()
+(ert-deftest sem-init-test-resolve-llm-models-deduplicates-when-equal ()
   "Test resolved model list is deduplicated when weak equals medium."
   (cl-letf (((symbol-function 'getenv)
              (lambda (name)
@@ -81,13 +81,13 @@ that sem-git-sync is among them and that sem-git-sync-org-roam is fbound."
                 ((string= name "OPENROUTER_MODEL") "openrouter/medium")
                 ((string= name "OPENROUTER_WEAK_MODEL") "openrouter/medium")
                 (t nil)))))
-    (let ((resolved (sem-init--resolve-openrouter-models)))
+    (let ((resolved (sem-init--resolve-llm-models)))
       (should (string= (plist-get resolved :medium) "openrouter/medium"))
       (should (string= (plist-get resolved :weak) "openrouter/medium"))
       (should (= (length (plist-get resolved :models)) 1))
       (should-not (plist-get resolved :weak-fallback)))))
 
-(ert-deftest sem-init-test-resolve-openrouter-models-fallback-when-empty ()
+(ert-deftest sem-init-test-resolve-llm-models-fallback-when-empty ()
   "Test weak model falls back to medium when weak env var is empty."
   (cl-letf (((symbol-function 'getenv)
              (lambda (name)
@@ -95,7 +95,7 @@ that sem-git-sync is among them and that sem-git-sync-org-roam is fbound."
                 ((string= name "OPENROUTER_MODEL") "openrouter/medium")
                 ((string= name "OPENROUTER_WEAK_MODEL") "")
                 (t nil)))))
-    (let ((resolved (sem-init--resolve-openrouter-models)))
+    (let ((resolved (sem-init--resolve-llm-models)))
       (should (string= (plist-get resolved :weak) "openrouter/medium"))
       (should (plist-get resolved :weak-fallback))
       (should (= (length (plist-get resolved :models)) 1)))))

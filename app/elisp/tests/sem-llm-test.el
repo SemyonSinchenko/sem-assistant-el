@@ -359,5 +359,65 @@ or holds an invalid value."
     (setenv "SEM_LLM_REQUEST_TIMEOUT_SECONDS" nil)))
 
 
+;;; Provider and reasoning configuration
+
+(defmacro sem-llm-test--with-env (env &rest body)
+  "Run BODY with `getenv' answering from alist ENV (unknown names are nil)."
+  (declare (indent 1))
+  `(cl-letf (((symbol-function 'getenv)
+              (lambda (name &rest _) (cdr (assoc name ,env)))))
+     ,@body))
+
+(ert-deftest sem-llm-test-provider-defaults-to-deepseek ()
+  "Test DeepSeek is the default provider with a default model."
+  (sem-llm-test--with-env '(("DEEPSEEK_API_KEY" . "k"))
+    (should (string= (sem-llm-provider) "deepseek"))
+    (should (string= (sem-llm-api-key) "k"))
+    (should (string= (plist-get (sem-llm--resolve-model-for-tier 'medium) :model)
+                     "deepseek-flash"))))
+
+(ert-deftest sem-llm-test-provider-infers-legacy-openrouter ()
+  "Test an OpenRouter-only environment keeps using OpenRouter."
+  (sem-llm-test--with-env '(("OPENROUTER_KEY" . "k") ("OPENROUTER_MODEL" . "x/y"))
+    (should (string= (sem-llm-provider) "openrouter"))
+    (should (string= (plist-get (sem-llm--resolve-model-for-tier 'medium) :model) "x/y"))))
+
+(ert-deftest sem-llm-test-deepseek-ignores-openrouter-model-vars ()
+  "Test explicit DeepSeek provider does not pick up stale OpenRouter models."
+  (sem-llm-test--with-env '(("LLM_PROVIDER" . "deepseek")
+                            ("OPENROUTER_MODEL" . "qwen/qwen3")
+                            ("LLM_WEAK_MODEL" . "deepseek-flash"))
+    (should (string= (plist-get (sem-llm--resolve-model-for-tier 'medium) :model)
+                     "deepseek-flash"))))
+
+(ert-deftest sem-llm-test-unknown-provider-signals ()
+  "Test an unknown provider name is rejected."
+  (sem-llm-test--with-env '(("LLM_PROVIDER" . "acme"))
+    (should-error (sem-llm-provider))))
+
+(ert-deftest sem-llm-test-deepseek-thinking-disabled-by-default ()
+  "Test DeepSeek requests disable thinking unless an effort is configured."
+  (sem-llm-test--with-env '(("LLM_PROVIDER" . "deepseek")
+                            ("LLM_WEAK_REASONING_EFFORT" . "LOW")
+                            ("LLM_REASONING_EFFORT" . "bogus"))
+    (should (equal (sem-llm--request-params-for-tier 'medium)
+                   '(:thinking (:type "disabled"))))
+    (should (equal (sem-llm--request-params-for-tier 'weak)
+                   '(:thinking (:type "enabled") :reasoning_effort "low")))))
+
+(ert-deftest sem-llm-test-request-binds-reasoning-params ()
+  "Test sem-llm-request applies tier reasoning params to the gptel call."
+  (let ((captured nil))
+    (sem-llm-test--with-env '(("LLM_PROVIDER" . "deepseek")
+                              ("LLM_REASONING_EFFORT" . "high"))
+      (cl-letf (((symbol-function 'gptel-request)
+                 (lambda (_prompt &rest args)
+                   (setq captured gptel--request-params)
+                   (funcall (plist-get args :callback) "ok" (list :status 200))
+                   nil)))
+        (sem-llm-request "p" "s" (lambda (&rest _) nil) nil 'medium)
+        (should (equal captured
+                       '(:thinking (:type "enabled") :reasoning_effort "high")))))))
+
 (provide 'sem-llm-test)
 ;;; sem-llm-test.el ends here

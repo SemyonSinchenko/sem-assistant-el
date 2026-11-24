@@ -29,22 +29,58 @@
 (defconst sem-planner-high-priority-values '(?A ?B)
   "Priority values treated as high-priority overlap exceptions.")
 
-(defconst sem-planner-fixed-schedule-exception-titles '("process quarterly financial reports")
-  "Normalized task titles whose fixture-authored schedule must be preserved.")
+(defconst sem-planner-context-window-days 14
+  "Number of days ahead of today whose schedule is sent as planning context.")
 
-(defun sem-planner--normalize-title-for-exception-match (title)
-  "Normalize TITLE for fixed-schedule exception matching."
-  (let ((raw (or title "")))
-    (downcase
-     (string-trim
-      (replace-regexp-in-string
-       "[ \t]+" " "
-       (replace-regexp-in-string "\\[#\\([A-Ca-c]\\)\\]" "" raw))))))
+(defconst sem-planner-task-categories '("work" "family" "routine" "opensource")
+  "Task categories, as assigned by Pass 1 normalization.")
 
-(defun sem-planner--fixed-schedule-exception-title-p (title)
-  "Return non-nil when TITLE is a fixed-schedule exception task title."
-  (member (sem-planner--normalize-title-for-exception-match title)
-          sem-planner-fixed-schedule-exception-titles))
+(defun sem-planner--task-category (headline)
+  "Return the task category of org-element HEADLINE.
+Uses the first headline tag that is a known category, then the :FILETAGS:
+property written by Pass 1, then the first tag, defaulting to routine."
+  (let* ((tags (org-element-property :tags headline))
+         (filetags (org-element-property :FILETAGS headline))
+         (filetag (and (stringp filetags)
+                       (car (split-string filetags ":" t "[ \t]+")))))
+    (or (cl-find-if (lambda (tag) (member tag sem-planner-task-categories)) tags)
+        filetag
+        (car tags)
+        "routine")))
+
+(defun sem-planner--planning (headline kind)
+  "Return the KIND planning timestamp of org-element HEADLINE.
+KIND is `scheduled' or `deadline'.  Returns the org-element timestamp of a
+proper planning line, else a timestamp string from a legacy location: a
+property drawer entry, or a standalone SCHEDULED/DEADLINE line placed after
+the drawer (older generated tasks), which Org itself does not recognize.
+Must be called while the parsed buffer is current."
+  (let ((keyword (if (eq kind 'deadline) "DEADLINE" "SCHEDULED")))
+    (or (org-element-property (if (eq kind 'deadline) :deadline :scheduled) headline)
+        (org-element-property (intern (concat ":" keyword)) headline)
+        (save-excursion
+          (goto-char (org-element-property :begin headline))
+          (forward-line 1)
+          (let ((limit (save-excursion
+                         (if (re-search-forward "^\\*+[ \t]" nil t)
+                             (match-beginning 0)
+                           (point-max)))))
+            (when (re-search-forward
+                   (format "^[ \t]*\\(?:[A-Z]+:[ \t]*<[^>\n]+>[ \t]*\\)*%s:[ \t]*\\(<[^>\n]+>\\)"
+                           keyword)
+                   limit t)
+              (match-string-no-properties 1)))))))
+
+(defun sem-planner--fixed-schedule-p (headline)
+  "Return non-nil when HEADLINE carries a user-set schedule to preserve.
+The router marks tasks whose inbox capture already had a SCHEDULED
+timestamp with the :SEM_FIXED_SCHEDULE: property."
+  (let ((value (org-element-property :SEM_FIXED_SCHEDULE headline)))
+    (and (stringp value) (not (string-empty-p (string-trim value))))))
+
+(defun sem-planner--one-line (text)
+  "Collapse TEXT to a single line for line-oriented prompt context."
+  (string-trim (replace-regexp-in-string "[ \t\n]+" " " (or text ""))))
 
 (defun sem-planner--temp-file-path (&optional batch-id)
   "Compute the temp file path for BATCH-ID.
@@ -89,11 +125,14 @@ Handles both timestamp objects (from planning line) and strings (from property d
    ((stringp ts)
     (when (string-match
            (concat "<\\([0-9]+\\)-\\([0-9]+\\)-\\([0-9]+\\)"
-                   "\\(?:\\s-+[A-Za-z]\\{3\\}\\)?\\s-+\\([0-9]+\\):\\([0-9]+\\)"
-                   "\\(?:-\\([0-9]+\\):\\([0-9]+\\)\\)?>")
+                   "\\(?:\\s-+[^ \t>0-9][^ \t>]*\\)?"
+                   "\\(?:\\s-+\\([0-9]+\\):\\([0-9]+\\)"
+                   "\\(?:-\\([0-9]+\\):\\([0-9]+\\)\\)?\\)?[^>]*>")
             ts)
-      (let* ((start-hour (string-to-number (match-string 4 ts)))
-             (start-minute (string-to-number (match-string 5 ts)))
+      ;; A date without time is treated like the timestamp-object branch:
+      ;; a 30-minute block from midnight.
+      (let* ((start-hour (if (match-string 4 ts) (string-to-number (match-string 4 ts)) 0))
+             (start-minute (if (match-string 5 ts) (string-to-number (match-string 5 ts)) 0))
              (end-total (min (+ (* start-hour 60) start-minute 30)
                              (+ (* 23 60) 59))))
         (list (string-to-number (match-string 1 ts))
@@ -145,7 +184,7 @@ Each element is a plist with keys :id, :title, :scheduled, and :priority."
               (when id
                 (push (list :id id
                             :title (org-element-property :raw-value headline)
-                            :scheduled (org-element-property :SCHEDULED headline)
+                            :scheduled (sem-planner--planning headline 'scheduled)
                             :priority (org-element-property :priority headline))
                       snapshot)))))
         (nreverse snapshot)))))
@@ -195,6 +234,19 @@ Each element is a plist with :id, :title, :range, and :scheduled."
                     windows))))))
     (nreverse windows)))
 
+(defun sem-planner--windows-in-context-range (windows &optional now)
+  "Return WINDOWS whose start lies within the planning context range.
+The range spans from 24 hours before NOW (default: current time) to
+`sem-planner-context-window-days' days after it; older windows cannot
+conflict with new tasks and only inflate the prompt."
+  (let* ((now-epoch (float-time (or now (current-time))))
+         (from (- now-epoch 86400))
+         (to (+ now-epoch (* sem-planner-context-window-days 86400))))
+    (cl-remove-if-not (lambda (window)
+                        (let ((start (car (plist-get window :range))))
+                          (and start (>= start from) (< start to))))
+                      windows)))
+
 (defun sem-planner--occupied-windows-context (windows)
   "Format occupied WINDOWS for Pass 2 planning context."
   (if (null windows)
@@ -240,13 +292,14 @@ EXISTING-INDEX is used to classify each task by pre-existing state."
         (org-element-map ast 'headline
           (lambda (headline)
             (let* ((id (org-element-property :ID headline))
-                   (scheduled (org-element-property :SCHEDULED headline))
+                   (scheduled (sem-planner--planning headline 'scheduled))
                    (priority (org-element-property :priority headline))
                    (state (sem-planner--parse-task-state existing-index id scheduled)))
                (when id
                  (puthash id
                           (list :id id
                                 :title (org-element-property :raw-value headline)
+                                :fixed (sem-planner--fixed-schedule-p headline)
                                 :state state
                                 :priority priority
                                 :scheduled (when scheduled
@@ -254,41 +307,49 @@ EXISTING-INDEX is used to classify each task by pre-existing state."
                          metadata)))))))
     metadata))
 
-(defun sem-planner--anonymize-temp-tasks (temp-tasks existing-index)
-  "Anonymize TEMP_TASKS for Pass 2 LLM.
-Strips task bodies and returns ID, TAG, STATE, PRIORITY, and schedule metadata.
-Sensitive content is NEVER sent to LLM."
-  (when (string-empty-p temp-tasks)
-    (cl-return-from sem-planner--anonymize-temp-tasks ""))
-  (with-temp-buffer
-    (insert temp-tasks)
-    (org-mode)
-    (let ((ast (org-element-parse-buffer))
-          (result '()))
-      (org-element-map ast 'headline
-        (lambda (headline)
-          (let* ((id (org-element-property :ID headline))
-                 (tags (org-element-property :tags headline))
-                 (priority (org-element-property :priority headline))
-                 (tag-str (if tags (car tags) "routine"))
-                 (scheduled (org-element-property :SCHEDULED headline))
-                 (state (sem-planner--parse-task-state existing-index id scheduled))
-                 (sched-str (if scheduled
-                                (format "SCHEDULED: %s"
-                                        (org-element-interpret-data scheduled))
-                              "(unscheduled)"))
-                 (priority-str (if priority
-                                   (format "%c" priority)
-                                 "none")))
-            (when id
-              (push (format "- ID: %s | TAG:%s | PRIORITY:%s | STATE:%s | %s"
-                            id tag-str priority-str state sched-str)
-                    result)))))
-      (if result
-          (concat "Tasks to schedule:\n"
-                  (string-join (nreverse result) "\n")
-                  "\n")
-        ""))))
+(defun sem-planner--temp-tasks-context (temp-tasks existing-index)
+  "Return Pass 2 context lines for TEMP-TASKS.
+EXISTING-INDEX classifies each task by pre-existing state.  Each line
+carries the ID, category, priority, state, effort, schedule and title.
+Task bodies are never included: they may contain restored sensitive
+blocks."
+  (if (string-empty-p (or temp-tasks ""))
+      ""
+    (with-temp-buffer
+      (insert temp-tasks)
+      (org-mode)
+      (let ((ast (org-element-parse-buffer))
+            (result '()))
+        (org-element-map ast 'headline
+          (lambda (headline)
+            (let* ((id (org-element-property :ID headline))
+                   (priority (org-element-property :priority headline))
+                   (scheduled (sem-planner--planning headline 'scheduled))
+                   (deadline (sem-planner--planning headline 'deadline))
+                   (effort (org-element-property :EFFORT headline))
+                   (state (sem-planner--parse-task-state existing-index id scheduled)))
+              (when id
+                (push (format "- ID: %s | TAG:%s | PRIORITY:%s | STATE:%s%s | EFFORT:%s | %s%s | TITLE: %s"
+                              id
+                              (sem-planner--task-category headline)
+                              (if priority (format "%c" priority) "none")
+                              state
+                              (if (sem-planner--fixed-schedule-p headline) " (fixed by user)" "")
+                              (or effort "unknown")
+                              (if scheduled
+                                  (format "SCHEDULED: %s" (org-element-interpret-data scheduled))
+                                "(unscheduled)")
+                              (if deadline
+                                  (format " | DEADLINE: %s" (org-element-interpret-data deadline))
+                                "")
+                              (sem-planner--one-line
+                               (org-element-property :raw-value headline)))
+                      result)))))
+        (if result
+            (concat "Tasks to schedule:\n"
+                    (string-join (nreverse result) "\n")
+                    "\n")
+          "")))))
 
 (defun sem-planner--parse-scheduling-decisions (response)
   "Parse LLM RESPONSE into scheduling decisions.
@@ -296,10 +357,8 @@ Returns alist of (id . scheduled-timestamp) where scheduled-timestamp is nil for
 Response format expected:
   ID: <uuid> | SCHEDULED: <timestamp>
   ID: <uuid> | (unscheduled)"
-  (when (string-empty-p response)
-    (cl-return-from sem-planner--parse-scheduling-decisions '()))
   (let ((decisions '()))
-    (dolist (line (split-string response "\n" t))
+    (dolist (line (split-string (or response "") "\n" t))
       (cond
        ((string-match
          "^[ \t]*ID:[ \t]*\\([a-f0-9-]+\\)[ \t]*|[ \t]*SCHEDULED:[ \t]*\\(<[^>]+>\\)[ \t]*$"
@@ -319,8 +378,8 @@ Response format expected:
 DECISIONS is alist of (id . scheduled-timestamp).
 For each decision, find matching task by ID and inject SCHEDULED line.
 Returns modified temp-tasks string with scheduling injected."
-  (when (string-empty-p temp-tasks)
-    (cl-return-from sem-planner--merge-scheduling-into-tasks temp-tasks))
+  (if (string-empty-p (or temp-tasks ""))
+      temp-tasks
   (let ((runtime-min-start-epoch
          (float-time (date-to-time runtime-min-start))))
     (with-temp-buffer
@@ -330,7 +389,6 @@ Returns modified temp-tasks string with scheduling injected."
         (let* ((id (car decision))
                (scheduled (cdr decision))
                (meta (and id (gethash id task-metadata)))
-               (title (plist-get meta :title))
                (state (plist-get meta :state))
                (priority (plist-get meta :priority))
                (scheduled-range (and scheduled
@@ -340,7 +398,7 @@ Returns modified temp-tasks string with scheduling injected."
                                          (sem-planner--overlapping-window scheduled occupied-windows))))
           (when (and scheduled
                      (eq state 'newly-generated)
-                     (not (sem-planner--fixed-schedule-exception-title-p title))
+                     (not (plist-get meta :fixed))
                      scheduled-range
                      (> (car scheduled-range) runtime-min-start-epoch)
                      (or (null overlapping-window)
@@ -361,19 +419,13 @@ Returns modified temp-tasks string with scheduling injected."
                         (if (re-search-forward "^\\*+\\s-+TODO\\s-+" nil t)
                             (match-beginning 0)
                           (point-max)))))
-                (save-restriction
-                  (narrow-to-region section-start section-end)
-                  (goto-char (point-min))
-                  (while (re-search-forward "^[ \t]*SCHEDULED:[ \t]*<[^>]+>[ \t]*\\n?" nil t)
-                    (replace-match ""))
-                  (goto-char (point-min))
-                  (if (re-search-forward "^[ \t]*:END:[ \t]*$" nil t)
-                      (progn
-                        (end-of-line)
-                        (insert "\nSCHEDULED: " scheduled))
-                    (goto-char (point-max))
-                    (insert "\nSCHEDULED: " scheduled))))))))
-      (buffer-string))))
+                ;; Replace the section with one whose planning line (directly
+                ;; under the headline) carries the decided SCHEDULED.
+                (let ((section (buffer-substring section-start section-end)))
+                  (delete-region section-start section-end)
+                  (goto-char section-start)
+                  (insert (sem-core-normalize-planning-line section scheduled))))))))
+      (buffer-string)))))
 
 (defun sem-planner--append-merged-to-tasks-org (merged-tasks)
   "Atomically append MERGED-TASKS to tasks.org.
@@ -411,66 +463,55 @@ Appends \\n + merged-tasks to existing tasks.org content."
                          merged-tasks nil)
      nil)))
 
-(defun sem-planner--anonymize-tasks-content (content)
-  "Anonymize CONTENT tasks to time blocks.
-Returns a string with one line per task in format:
-YYYY-MM-DD HH:MM-HH:MM busy PRIORITY:{A|B|C} TAG:{tag}
-Strips titles and IDs, preserves time+priority+tag."
-  (let ((anonymized '()))
+(defun sem-planner--schedule-context-content (content &optional now)
+  "Return the open schedule from tasks CONTENT as planning context lines.
+
+Only not-done tasks whose SCHEDULED (or, failing that, DEADLINE) falls
+between the start of today and `sem-planner-context-window-days' days after
+NOW (default: current time) are included.  Each line has the form:
+YYYY-MM-DD HH:MM-HH:MM busy PRIORITY:{A|B|C} TAG:{category} | TITLE
+Titles are included so the model can group and order related work; IDs and
+bodies are not."
+  (let* ((now (or now (current-time)))
+         (window-start (float-time
+                        (encode-time 0 0 0
+                                     (string-to-number (sem-time-format-string "%d" now))
+                                     (string-to-number (sem-time-format-string "%m" now))
+                                     (string-to-number (sem-time-format-string "%Y" now))
+                                     (sem-time-client-timezone))))
+         (window-end (+ (float-time now) (* sem-planner-context-window-days 86400)))
+         (lines '()))
     (when (not (string-empty-p (or content "")))
       (with-temp-buffer
         (insert content)
         (org-mode)
-        (let ((ast (org-element-parse-buffer)))
-          (org-element-map ast 'headline
-            (lambda (headline-element)
-              (let* ((scheduled (org-element-property :SCHEDULED headline-element))
-                     (deadline (org-element-property :DEADLINE headline-element))
-                     (priority (org-element-property :priority headline-element))
-                     (tags (org-element-property :tags headline-element))
-                     (tag-str (if tags (car tags) ""))
-                     (time-str nil))
-                (cond
-                 (scheduled
-                  (let ((ts-parts (sem-planner--parse-timestamp scheduled)))
-                    (when ts-parts
-                      (let ((y (nth 0 ts-parts))
-                            (m (nth 1 ts-parts))
-                            (d (nth 2 ts-parts))
-                            (hs (nth 3 ts-parts))
-                            (ms (nth 4 ts-parts))
-                            (he (nth 5 ts-parts))
-                            (me (nth 6 ts-parts)))
-                        (when (and y m d)
-                          (setq time-str (format "%04d-%02d-%02d %02d:%02d-%02d:%02d busy PRIORITY:%c TAG:%s"
-                                                 y m d
-                                                 (or hs 0) (or ms 0)
-                                                 (or he 23) (or me 59)
-                                                 (or priority ?B)
-                                                 tag-str)))))))
-                 (deadline
-                  (let ((ts-parts (sem-planner--parse-timestamp deadline)))
-                    (when ts-parts
-                      (let ((y (nth 0 ts-parts))
-                            (m (nth 1 ts-parts))
-                            (d (nth 2 ts-parts))
-                            (hs (nth 3 ts-parts))
-                            (ms (nth 4 ts-parts)))
-                        (when (and y m d)
-                          (setq time-str (format "%04d-%02d-%02d %02d:%02d-23:59 busy PRIORITY:%c TAG:%s"
-                                                 y m d
-                                                 (or hs 0) (or ms 0)
-                                                 (or priority ?B)
-                                                 tag-str))))))))
-                (when time-str
-                  (push time-str anonymized))))))))
-    (if anonymized
-        (string-join (nreverse anonymized) "\n")
-      "")))
+        (org-element-map (org-element-parse-buffer) 'headline
+          (lambda (headline)
+            (let* ((scheduled (sem-planner--planning headline 'scheduled))
+                   (deadline (sem-planner--planning headline 'deadline))
+                   (timestamp (or scheduled deadline))
+                   (parts (and timestamp (sem-planner--parse-timestamp timestamp)))
+                   (range (and timestamp (sem-planner--timestamp-to-epoch-range timestamp))))
+              (when (and parts range
+                         (not (eq (org-element-property :todo-type headline) 'done))
+                         (>= (car range) window-start)
+                         (< (car range) window-end))
+                (push (format "%04d-%02d-%02d %02d:%02d-%02d:%02d busy PRIORITY:%c TAG:%s%s | %s"
+                              (nth 0 parts) (nth 1 parts) (nth 2 parts)
+                              (or (nth 3 parts) 0) (or (nth 4 parts) 0)
+                              (if scheduled (or (nth 5 parts) 23) 23)
+                              (if scheduled (or (nth 6 parts) 59) 59)
+                              (or (org-element-property :priority headline) ?B)
+                              (sem-planner--task-category headline)
+                              (if scheduled "" " (deadline)")
+                              (sem-planner--one-line
+                               (org-element-property :raw-value headline)))
+                      lines)))))))
+    (string-join (sort lines #'string<) "\n")))
 
-(defun sem-planner--anonymize-tasks ()
-  "Read tasks.org and anonymize tasks to time blocks."
-  (sem-planner--anonymize-tasks-content
+(defun sem-planner--schedule-context ()
+  "Return the open schedule context from `sem-planner-tasks-file'."
+  (sem-planner--schedule-context-content
    (sem-planner--read-tasks-file-content)))
 
 (defun sem-planner--build-pass2-prompt
@@ -495,12 +536,26 @@ RUNTIME-NOW is the current run datetime and RUNTIME-MIN-START is RUNTIME-NOW + 1
       "- Keep pre-existing-unscheduled tasks unscheduled.\n"
       "- Avoid overlap with pre-existing occupied windows by default.\n"
       "- Overlap is allowed only for high-priority newly-generated tasks when needed.\n"
-      "- Never mutate preserved pre-existing schedules while applying overlap exceptions.\n\n"
+      "- Never mutate preserved pre-existing schedules while applying overlap exceptions.\n"
+      "- Tasks marked (fixed by user) already carry the user's own SCHEDULED; keep it.\n\n"
+      "How to plan (be decisive, the user wants a concrete plan, not hedging):\n"
+      "- Schedule every newly-generated task unless it is genuinely impossible to place;\n"
+      "  leaving a task unscheduled is the exception, not the safe default.\n"
+      "- Size each block from EFFORT; when EFFORT is unknown, estimate it from the TITLE.\n"
+      "- Use TITLE, TAG and the user rules together: respect per-category time windows,\n"
+      "  working hours and days, and place related tasks next to each other.\n"
+      "- Order by urgency: DEADLINE first, then PRIORITY A before B before C.\n"
+      "  [#A] tasks go into the earliest suitable slot, ideally within 1-2 days.\n"
+      "- Do not overload a day: keep the total of busy blocks per day reasonable and\n"
+      "  leave short buffers between blocks; spread low-priority work over the window.\n"
+      (format "- Plan within the next %d days unless a DEADLINE requires otherwise.\n\n"
+              sem-planner-context-window-days)
       "=== USER SCHEDULING RULES ===\n"
      (if (string-empty-p rules-text)
          "(No rules specified)\n"
        (concat rules-text "\n"))
-     "\n=== EXISTING SCHEDULE ===\n"
+     (format "\n=== EXISTING SCHEDULE (open tasks, today + %d days) ===\n"
+             sem-planner-context-window-days)
       (if (string-empty-p anonymized-schedule)
           "(No existing tasks)\n"
         (concat anonymized-schedule "\n"))
@@ -519,9 +574,11 @@ RUNTIME-NOW is the current run datetime and RUNTIME-MIN-START is RUNTIME-NOW + 1
 (defun sem-planner--system-prompt ()
   "Return the system prompt for Pass 2 planning."
   (concat
-   "You are a Task Scheduling assistant.\n"
-   sem-prompts-org-mode-cheat-sheet
-   "\nMinimize conflicts, respect preferences.\n"))
+   "You are a proactive personal Task Scheduling assistant. You turn a list of "
+   "tasks into a realistic calendar: every task gets a concrete time block that "
+   "respects the user's rules, existing commitments, priorities and deadlines.\n\n"
+   sem-prompts-time-range-format
+   "\n\nMinimize conflicts, respect preferences, and output only the requested lines.\n"))
 
 (defun sem-planner--validate-planned-tasks (response)
   "Validate that RESPONSE contains scheduling decisions in simple format.
@@ -573,10 +630,11 @@ Captures and returns a base tasks.org hash before Pass 2 context generation."
     (list :base-hash base-hash
           :existing-index existing-index
           :occupied-windows occupied-windows
-          :occupied-windows-context (sem-planner--occupied-windows-context occupied-windows)
+          :occupied-windows-context (sem-planner--occupied-windows-context
+                                     (sem-planner--windows-in-context-range occupied-windows))
           :task-metadata (sem-planner--temp-task-metadata temp-tasks existing-index)
-          :anonymized-existing (sem-planner--anonymize-tasks-content base-content)
-          :anonymized-temp (sem-planner--anonymize-temp-tasks temp-tasks existing-index)
+          :anonymized-existing (sem-planner--schedule-context-content base-content)
+          :anonymized-temp (sem-planner--temp-tasks-context temp-tasks existing-index)
           :runtime-min-start runtime-min-start)))
 
 (defun sem-planner--attempt-conflict-aware-planning

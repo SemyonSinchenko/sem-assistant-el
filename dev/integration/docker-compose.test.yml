@@ -6,8 +6,15 @@ services:
       - ./test-data:/data:rw,z
       - ./logs:/var/log/sem:rw,z
     environment:
-      - OPENROUTER_KEY=${OPENROUTER_KEY}
-      - OPENROUTER_MODEL=${OPENROUTER_MODEL}
+      - LLM_PROVIDER=${LLM_PROVIDER:-deepseek}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-deepseek-flash}
+      - LLM_WEAK_MODEL=${LLM_WEAK_MODEL:-}
+      - LLM_REASONING_EFFORT=${LLM_REASONING_EFFORT:-none}
+      - LLM_WEAK_REASONING_EFFORT=${LLM_WEAK_REASONING_EFFORT:-none}
+      - OPENROUTER_KEY=${OPENROUTER_KEY:-}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-}
       - OPENROUTER_WEAK_MODEL=${OPENROUTER_WEAK_MODEL:-}
       - CLIENT_TIMEZONE=${CLIENT_TIMEZONE:-Etc/UTC}
       - TZ=${CLIENT_TIMEZONE:-Etc/UTC}

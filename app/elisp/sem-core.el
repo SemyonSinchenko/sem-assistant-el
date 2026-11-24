@@ -52,6 +52,7 @@ Supported values are `skip' and `serialize'.")
     ("inbox-purge" :policy skip :stale-ttl-seconds 5400)
     ("rss-morning-digest" :policy skip :stale-ttl-seconds 7200)
     ("rss-morning-archive" :policy skip :stale-ttl-seconds 900)
+    ("daily-plan" :policy skip :stale-ttl-seconds 1800)
     ("git-sync-org-roam" :policy serialize :stale-ttl-seconds 3600)
     ("git-sync-org-roam-prepull" :policy skip :stale-ttl-seconds 900))
   "Per-job cron overlap policy and stale-lock TTL settings.")
@@ -393,30 +394,29 @@ Returns t on success, nil on failure."
             (with-temp-file log-file
               (insert "* " year "\n")))
 
-          ;; Read current content
-          (with-temp-buffer
-            (insert-file-contents log-file)
-
-            ;; Check/create year heading
-            (goto-char (point-min))
-            (unless (re-search-forward (format "^\\* %s$" year) nil t)
-              (goto-char (point-max))
-              (insert "* " year "\n"))
-
-            ;; Check/create month heading
-            (goto-char (point-min))
-            (unless (re-search-forward (format "^\\*\\* %s (%s)$" month month-name) nil t)
-              (goto-char (point-max))
-              (insert "** " month " (" month-name ")\n"))
-
-            ;; Check/create day heading
-            (goto-char (point-min))
-            (unless (re-search-forward (format "^\\*\\*\\* %s" day) nil t)
-              (goto-char (point-max))
-              (insert "*** " day "\n"))
-
-            ;; Write back
-            (write-region (point-min) (point-max) log-file nil 'silent)))
+          ;; Headings are only ever appended, so append missing ones instead of
+          ;; rewriting the whole (ever-growing) log file on each call.
+          (let ((missing ""))
+            (with-temp-buffer
+              (insert-file-contents log-file)
+              (goto-char (point-min))
+              (if (not (re-search-forward (format "^\\* %s$" year) nil t))
+                  (setq missing (concat "* " year "\n"
+                                        "** " month " (" month-name ")\n"
+                                        "*** " day "\n"))
+                ;; Month and day headings are looked up inside the current
+                ;; year subtree only, so last year's months do not match.
+                (unless (re-search-forward
+                         (format "^\\*\\* %s (%s)$" month month-name) nil t)
+                  (setq missing (concat "** " month " (" month-name ")\n")))
+                (unless (re-search-forward (format "^\\*\\*\\* %s" day) nil t)
+                  (setq missing (concat missing "*** " day "\n"))))
+              (unless (or (string-empty-p missing)
+                          (= (point-max) (point-min))
+                          (eq (char-before (point-max)) ?\n))
+                (setq missing (concat "\n" missing))))
+            (unless (string-empty-p missing)
+              (write-region missing nil log-file t 'silent))))
         t)
     (error nil)))  ; Silently fail on read-only filesystems
 
@@ -489,12 +489,16 @@ detailed error info to errors.org."
 
           (make-directory (file-name-directory errors-file) t)
 
+          ;; errors.org is also edited from mobile/web clients, so write the
+          ;; full new content to a temp file and rename it into place.
           (with-temp-buffer
             (when (file-exists-p errors-file)
               (insert-file-contents errors-file))
 
             ;; Insert error entry
             (goto-char (point-max))
+            (unless (or (bobp) (eq (char-before) ?\n))
+              (insert "\n"))
             (insert (format "* TODO %s[%s] [%s] [%s] FAIL%s\n"
                             (if priority (format "%s " priority) "")
                             timestamp
@@ -511,7 +515,14 @@ detailed error info to errors.org."
             (insert "** Raw LLM Output\n")
             (insert (or raw-output "N/A") "\n\n")
 
-            (write-region (point-min) (point-max) errors-file nil 'silent))))
+            (let ((tmp-file (concat errors-file ".tmp")))
+              (write-region (point-min) (point-max) tmp-file nil 'silent)
+              (condition-case _rename-err
+                  (rename-file tmp-file errors-file t)
+                ;; Fall back to a direct write so the error is never lost.
+                (error
+                 (ignore-errors (delete-file tmp-file))
+                 (write-region (point-min) (point-max) errors-file nil 'silent)))))))
     (error
      (condition-case _fallback-err
          (message "SEM-STDERR: Failed to write %s [%s/%s]: %s"
@@ -554,13 +565,43 @@ Nil when no batch is in progress.")
   "Timer for the batch watchdog.
 Cancels the previous timer before setting a new one.")
 
+(defconst sem-core-batch-watchdog-seconds (* 25 60)
+  "Seconds after which a batch is force-closed and planning runs.
+Kept below the 30-minute inbox cron interval so a stuck batch is closed
+before the next cron run would otherwise skip or supersede it.")
+
+(defvar sem-core--planning-fired-batch nil
+  "Batch ID for which the planning step has already been triggered.
+Planning runs at most once per batch; late callbacks arriving after the
+barrier or watchdog fired must not trigger it again.")
+
+(defun sem-core--batch-open-p (batch-id)
+  "Return non-nil when BATCH-ID is the active batch and still accepts results.
+A batch closes once its planning step has been triggered."
+  (and (integerp batch-id)
+       (= batch-id sem-core--batch-id)
+       (not (eql sem-core--planning-fired-batch batch-id))))
+
+(defun sem-core--fire-planning-once (batch-id reason)
+  "Trigger the planning step for BATCH-ID unless it already ran.
+REASON is a short string used for diagnostics."
+  (if (eql sem-core--planning-fired-batch batch-id)
+      (sem-core-log "core" "INBOX-ITEM" "SKIP"
+                    (format "Planning already triggered for batch=%d (%s)" batch-id reason)
+                    nil)
+    (setq sem-core--planning-fired-batch batch-id)
+    (sem-core--cancel-batch-watchdog)
+    (message "SEM: Batch %d complete, firing planning step (%s)" batch-id reason)
+    (when (fboundp 'sem-planner-run-planning-step)
+      (sem-planner-run-planning-step batch-id))))
+
 (defun sem-core--batch-barrier-check (&optional callback-batch-id)
   "Check batch barrier and trigger planning for CALLBACK-BATCH-ID.
 CALLBACK-BATCH-ID defaults to `sem-core--batch-id' when nil.
-Only the owning batch is allowed to decrement pending callbacks or trigger
-planning. Stale callbacks are logged and ignored."
+Only the owning, still-open batch is allowed to decrement pending callbacks
+or trigger planning. Stale and late callbacks are logged and ignored."
   (let ((batch-id (or callback-batch-id sem-core--batch-id)))
-    (if (/= batch-id sem-core--batch-id)
+    (if (not (sem-core--batch-open-p batch-id))
         (sem-core-log "core" "INBOX-ITEM" "SKIP"
                       (format "Ignoring stale barrier callback: callback-batch=%d active-batch=%d"
                               batch-id sem-core--batch-id)
@@ -572,16 +613,13 @@ planning. Stale callbacks are logged and ignored."
                             batch-id sem-core--pending-callbacks)
                     nil)
       (when (= sem-core--pending-callbacks 0)
-        (sem-core--cancel-batch-watchdog)
-        (message "SEM: Batch %d complete, firing planning step" batch-id)
-        (when (fboundp 'sem-planner-run-planning-step)
-          (sem-planner-run-planning-step batch-id))))))
+        (sem-core--fire-planning-once batch-id "barrier")))))
 
 (defun sem-core--batch-watchdog-fired (watchdog-batch-id)
   "Watchdog callback for WATCHDOG-BATCH-ID.
 Only the owning batch may mutate barrier state or trigger planning."
   (condition-case err
-      (if (/= watchdog-batch-id sem-core--batch-id)
+      (if (not (sem-core--batch-open-p watchdog-batch-id))
           (sem-core-log "core" "INBOX-ITEM" "SKIP"
                         (format "Ignoring stale watchdog: watchdog-batch=%d active-batch=%d"
                                 watchdog-batch-id sem-core--batch-id)
@@ -589,26 +627,27 @@ Only the owning batch may mutate barrier state or trigger planning."
         (progn
           (message "SEM: Batch watchdog fired for batch %d" watchdog-batch-id)
           (sem-core-log "core" "INBOX-ITEM" "OK"
-                        (format "Batch watchdog fired: batch=%d" watchdog-batch-id)
+                        (format "Batch watchdog fired: batch=%d pending=%d"
+                                watchdog-batch-id sem-core--pending-callbacks)
                         nil)
           (setq sem-core--pending-callbacks 0)
-          (when (fboundp 'sem-planner-run-planning-step)
-            (sem-planner-run-planning-step watchdog-batch-id))))
+          (sem-core--fire-planning-once watchdog-batch-id "watchdog")))
     (error
      (message "SEM: Watchdog error: %s" (error-message-string err)))))
 
 (defun sem-core--start-batch-watchdog (&optional batch-id)
-  "Start or reset the batch watchdog timer.
-The watchdog fires after 30 minutes if the barrier hasn't fired.
-Cancels any existing watchdog before starting a new one."
+  "Start or reset the batch watchdog timer for BATCH-ID.
+The watchdog fires after `sem-core-batch-watchdog-seconds' if the barrier
+hasn't fired.  Cancels any existing watchdog before starting a new one."
   (let ((owner-batch-id (or batch-id sem-core--batch-id)))
     (setq sem-core--batch-start-time (current-time))
-  (when sem-core--batch-watchdog-timer
-    (cancel-timer sem-core--batch-watchdog-timer))
-  (setq sem-core--batch-watchdog-timer
-        (run-with-timer (* 30 60) nil
-                        (lambda () (sem-core--batch-watchdog-fired owner-batch-id))))
-    (message "SEM: Batch watchdog started (30 min timeout) for batch %d" owner-batch-id)))
+    (when sem-core--batch-watchdog-timer
+      (cancel-timer sem-core--batch-watchdog-timer))
+    (setq sem-core--batch-watchdog-timer
+          (run-with-timer sem-core-batch-watchdog-seconds nil
+                          (lambda () (sem-core--batch-watchdog-fired owner-batch-id))))
+    (message "SEM: Batch watchdog started (%ds timeout) for batch %d"
+             sem-core-batch-watchdog-seconds owner-batch-id)))
 
 (defun sem-core--cancel-batch-watchdog ()
   "Cancel the batch watchdog timer if running."
@@ -695,11 +734,20 @@ Uses atomic write via temp file and rename."
     (rename-file tmp-file cursor-file t)))
 
 (defun sem-core--purge-cursor-to-active-hashes (active-hashes)
-  "Rewrite cursor file to ACTIVE-HASHES only.
-ACTIVE-HASHES is a list of retained inbox headline hashes."
-  (let ((cursor-alist (mapcar (lambda (hash) (cons hash t))
-                              (delete-dups (copy-sequence (or active-hashes '()))))))
-    (sem-core--write-cursor cursor-alist)))
+  "Drop cursor entries whose hash is not in ACTIVE-HASHES.
+ACTIVE-HASHES is the list of headline hashes still present in the inbox.
+Only hashes that were already marked processed are kept: a retained but
+unprocessed headline must stay unprocessed so it is still routed."
+  (let ((cursor (sem-core--read-cursor)))
+    (sem-core--write-cursor
+     (cl-remove-if-not (lambda (entry) (member (car entry) active-hashes))
+                       cursor))))
+
+(defun sem-core--purge-retries-to-active-hashes (active-hashes)
+  "Drop retry counters whose hash is not in ACTIVE-HASHES."
+  (sem-core--write-retries
+   (cl-remove-if-not (lambda (entry) (member (car entry) active-hashes))
+                     (sem-core--read-retries))))
 
 (defun sem-core--compute-headline-hash (headline)
   "Compute a content hash for HEADLINE.
@@ -817,6 +865,101 @@ TITLE and RESPONSE are optional for error logging."
                           title
                           response))))
 
+;;; Org Planning Lines
+
+(defconst sem-core--planning-token-regexp
+  "\\(SCHEDULED\\|DEADLINE\\):[ \t]*\\(<[^>\n]+>\\)"
+  "Regexp matching one SCHEDULED/DEADLINE keyword with its timestamp.")
+
+(defun sem-core-normalize-planning-line (entry &optional scheduled)
+  "Return ENTRY with its planning info on the line right after the headline.
+
+Org only recognizes SCHEDULED/DEADLINE as planning when they are on the line
+directly below the headline; LLM output often puts them after the property
+drawer or in the body, where agenda and org-element ignore them.  All
+SCHEDULED/DEADLINE timestamps on standalone lines of the first entry are
+collected (the first of each kind wins) and rewritten as one planning line.
+When SCHEDULED is a timestamp string, it replaces any existing SCHEDULED.
+ENTRY must start with its headline; text of child headlines is untouched."
+  (with-temp-buffer
+    (insert entry)
+    (goto-char (point-min))
+    (if (not (re-search-forward "^\\*+[ \t]" nil t))
+        entry
+      (let* ((body-start (progn (forward-line 1) (point)))
+             (body-end (save-excursion
+                         (if (re-search-forward "^\\*+[ \t]" nil t)
+                             (match-beginning 0)
+                           (point-max))))
+             (found-scheduled nil)
+             (found-deadline nil))
+        (save-restriction
+          (narrow-to-region body-start body-end)
+          (goto-char (point-min))
+          (while (re-search-forward
+                  (concat "^[ \t]*\\(?:" sem-core--planning-token-regexp
+                          "[ \t]*\\)+$")
+                  nil t)
+            (let ((line (match-string 0))
+                  (line-start (match-beginning 0))
+                  (line-end (match-end 0))
+                  (start 0))
+              (while (string-match sem-core--planning-token-regexp line start)
+                (if (string= (match-string 1 line) "SCHEDULED")
+                    (unless found-scheduled
+                      (setq found-scheduled (match-string 2 line)))
+                  (unless found-deadline
+                    (setq found-deadline (match-string 2 line))))
+                (setq start (match-end 0)))
+              (delete-region line-start (min (point-max) (1+ line-end)))))
+          (let ((new-scheduled (or scheduled found-scheduled)))
+            (goto-char (point-min))
+            (when (or new-scheduled found-deadline)
+              (insert (string-join
+                       (delq nil (list (and new-scheduled
+                                            (concat "SCHEDULED: " new-scheduled))
+                                       (and found-deadline
+                                            (concat "DEADLINE: " found-deadline))))
+                       " ")
+                      "\n"))))
+        (buffer-string)))))
+
+(defun sem-core-repair-planning-lines (file)
+  "Move misplaced SCHEDULED/DEADLINE lines in FILE under their headlines.
+Manual maintenance command for task files written before planning lines
+were normalized:
+  emacsclient -s sem-server -e \"(sem-core-repair-planning-lines \\\"/data/tasks.org\\\")\"
+Writes atomically and returns the number of entries changed."
+  (let ((changed 0)
+        (chunks '()))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (let ((starts '()))
+        (while (re-search-forward "^\\*+[ \t]" nil t)
+          (push (match-beginning 0) starts))
+        (setq starts (nreverse starts))
+        (push (buffer-substring-no-properties
+               (point-min) (or (car starts) (point-max)))
+              chunks)
+        (while starts
+          (let* ((start (car starts))
+                 (end (or (cadr starts) (point-max)))
+                 (entry (buffer-substring-no-properties start end))
+                 (fixed (sem-core-normalize-planning-line entry)))
+            (unless (string= entry fixed)
+              (setq changed (1+ changed)))
+            (push fixed chunks)
+            (setq starts (cdr starts))))))
+    (when (> changed 0)
+      (let ((tmp-file (concat file ".tmp")))
+        (with-temp-file tmp-file
+          (insert (apply #'concat (nreverse chunks))))
+        (rename-file tmp-file file t)))
+    (sem-core-log "core" "PURGE" "OK"
+                  (format "Repaired planning lines in %d entries of %s" changed file))
+    changed))
+
 ;;; Inbox Processing Entry Point
 
 (defun sem-core--cleanup-stale-temp-files ()
@@ -842,22 +985,34 @@ Initializes batch state for tracking callbacks and triggering planning step."
    "inbox-processing" "core" "INBOX-ITEM"
    (lambda ()
      (condition-case err
-         (progn
+         (if (and (> sem-core--batch-id 0)
+                  (sem-core--batch-open-p sem-core--batch-id)
+                  (> sem-core--pending-callbacks 0))
+             ;; Async work of the previous batch is still in flight.  Starting
+             ;; a new batch would orphan its results, so let it finish (the
+             ;; batch watchdog bounds how long that can take).
+             (progn
+               (sem-core-log "core" "INBOX-ITEM" "SKIP"
+                             (format "Previous batch %d still in flight (pending=%d)"
+                                     sem-core--batch-id sem-core--pending-callbacks)
+                             nil)
+               (message "SEM: Previous batch %d still in flight, skipping this run"
+                        sem-core--batch-id))
            (message "SEM: sem-core-process-inbox called")
            (sem-core--cleanup-stale-temp-files)
            (setq sem-core--batch-id (1+ sem-core--batch-id))
-           (setq sem-core--pending-callbacks 0)
+           ;; The dispatch loop itself holds one pending slot so that callbacks
+           ;; completing synchronously during dispatch cannot close the batch
+           ;; before every item has been dispatched.
+           (setq sem-core--pending-callbacks 1)
            (sem-core--start-batch-watchdog sem-core--batch-id)
-           (when (fboundp 'sem-router-process-inbox)
-             (message "SEM: Calling sem-router-process-inbox...")
-             (sem-router-process-inbox sem-core--batch-id)
-             (message "SEM: sem-router-process-inbox returned"))
-           (when (= sem-core--pending-callbacks 0)
-             (sem-core--cancel-batch-watchdog)
-             (message "SEM: No pending callbacks, firing planning step immediately (batch %d)"
-                      sem-core--batch-id)
-             (when (fboundp 'sem-planner-run-planning-step)
-               (sem-planner-run-planning-step sem-core--batch-id)))
+           (unwind-protect
+               (when (fboundp 'sem-router-process-inbox)
+                 (message "SEM: Calling sem-router-process-inbox...")
+                 (sem-router-process-inbox sem-core--batch-id)
+                 (message "SEM: sem-router-process-inbox returned"))
+             ;; Release the dispatch slot; fires planning when nothing is pending.
+             (sem-core--batch-barrier-check sem-core--batch-id))
            (message "SEM: sem-core-process-inbox done"))
        (error
         (sem-core-log-error "core" "INBOX-ITEM" (error-message-string err) nil)
@@ -865,19 +1020,113 @@ Initializes batch state for tracking callbacks and triggering planning step."
 
 ;;; Inbox Purge
 
+(defconst sem-core-purge-max-attempts 3
+  "Maximum purge attempts when the inbox changes concurrently (WebDAV upload).")
+
+(defun sem-core--purge-plan (content processed-p)
+  "Compute the purge result for inbox CONTENT.
+PROCESSED-P is a predicate on headline hashes.
+Return a plist with :content (new inbox text), :purged (count of removed
+processed headlines) and :retained-hashes (hashes of every headline that
+remains in the new content, processed or not).
+
+Text before the first headline is preserved.  A retained headline keeps its
+whole subtree, so nested headlines inside it are not emitted twice; an
+unprocessed child of a purged parent is kept on its own."
+  (with-temp-buffer
+    (insert content)
+    (org-mode)
+    (let* ((ast (org-element-parse-buffer))
+           (first-headline (org-element-map ast 'headline #'identity nil t))
+           (preamble (buffer-substring-no-properties
+                      (point-min)
+                      (if first-headline
+                          (org-element-property :begin first-headline)
+                        (point-max))))
+           (kept-end 0)
+           (chunks '())
+           (retained '())
+           (purged 0))
+      (org-element-map ast 'headline
+        (lambda (headline-element)
+          (let* ((begin (org-element-property :begin headline-element))
+                 (end (org-element-property :end headline-element))
+                 (title (org-element-property :raw-value headline-element))
+                 (tags (org-element-property :tags headline-element))
+                 (body (sem-router--extract-headline-body headline-element))
+                 (hash (secure-hash 'sha256
+                                    (json-encode
+                                     (vector title
+                                             (if tags (string-join tags " ") "")
+                                             (or body ""))))))
+            (cond
+             ;; Inside an already retained subtree: it stays with its parent.
+             ((< begin kept-end)
+              (push hash retained))
+             ((funcall processed-p hash)
+              (setq purged (1+ purged)))
+             (t
+              (push hash retained)
+              (setq kept-end end)
+              (push (buffer-substring-no-properties begin end) chunks))))))
+      (list :content (concat preamble
+                             (mapconcat (lambda (chunk)
+                                          (if (string-suffix-p "\n" chunk)
+                                              chunk
+                                            (concat chunk "\n")))
+                                        (nreverse chunks)
+                                        ""))
+            :purged purged
+            :retained-hashes retained))))
+
+(defun sem-core--purge-state-to-retained-hashes (retained)
+  "Prune cursor and retry state to the RETAINED inbox headline hashes.
+Cursor and retries are pruned independently so one failure does not block
+the other."
+  (condition-case purge-cursor-err
+      (progn
+        (sem-core--purge-cursor-to-active-hashes retained)
+        (sem-core-log "purge" "PURGE" "OK"
+                      (format "Cursor pruned to %d retained hashes" (length retained))))
+    (error
+     (sem-core-log-error "purge" "PURGE"
+                         (format "Cursor purge failed: %s"
+                                 (error-message-string purge-cursor-err))
+                         nil
+                         nil)))
+  (condition-case purge-retries-err
+      (progn
+        (sem-core--purge-retries-to-active-hashes retained)
+        (sem-core-log "purge" "PURGE" "OK"
+                      (format "Retries pruned to %d retained hashes" (length retained))))
+    (error
+     (sem-core-log-error "purge" "PURGE"
+                         (format "Retries purge failed: %s"
+                                 (error-message-string purge-retries-err))
+                         nil
+                         nil))))
+
+(defun sem-core--read-file-string (file)
+  "Return the contents of FILE as a string."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (buffer-string)))
+
 (defun sem-core-purge-inbox ()
   "Atomic purge of processed headlines from inbox-mobile.org.
 Only runs at 4AM window. Uses temp file + rename-file for atomicity.
 Hash computation matches sem-router--parse-headlines format:
-(json-encode (vector title space-joined-tags body))."
+(json-encode (vector title space-joined-tags body)).
+
+Unprocessed headlines are kept and stay unprocessed: their cursor and retry
+state survives the purge.  If the inbox changes while the purge is being
+computed (a concurrent WebDAV upload), the purge is recomputed."
   (sem-core-run-cron-guarded
    "inbox-purge" "purge" "PURGE"
    (lambda ()
      (condition-case err
          (let* ((inbox-file sem-core-inbox-file)
                 (tmp-file (concat inbox-file ".purge.tmp"))
-                (keep-hashes '())
-                (purged-count 0)
                 (hour (string-to-number (sem-time-format-string "%H"))))
            (cond
             ((/= hour 4)
@@ -885,61 +1134,41 @@ Hash computation matches sem-router--parse-headlines format:
              (message "SEM: Purge only runs at 4AM, current hour: %d" hour))
             ((not (file-exists-p inbox-file))
              (sem-core-log "purge" "PURGE" "SKIP" "inbox-mobile.org does not exist")
-             (message "SEM: inbox-mobile.org does not exist, skipping inbox purge"))
+             (message "SEM: inbox-mobile.org does not exist, skipping inbox purge")
+             ;; Nothing is retained, so no cursor or retry state is needed.
+             (sem-core--purge-state-to-retained-hashes '()))
             (t
              (require 'sem-router)
-             (let ((keep-headlines '()))
-               (with-temp-buffer
-                 (insert-file-contents inbox-file)
-                 (org-mode)
-                 (let ((ast (org-element-parse-buffer)))
-                   (org-element-map ast 'headline
-                     (lambda (headline-element)
-                       (let* ((title (org-element-property :raw-value headline-element))
-                              (tags (org-element-property :tags headline-element))
-                              (body (sem-router--extract-headline-body headline-element))
-                              (tags-str (if tags (string-join tags " ") ""))
-                              (body-str (or body ""))
-                              (hash (secure-hash 'sha256
-                                                 (json-encode (vector title tags-str body-str)))))
-                         (if (sem-core--is-processed hash)
-                             (setq purged-count (1+ purged-count))
-                           (let ((begin (org-element-property :begin headline-element))
-                                 (end (org-element-property :end headline-element)))
-                             (push hash keep-hashes)
-                             (push (buffer-substring-no-properties begin end) keep-headlines)))))))
-                 (with-temp-file tmp-file
-                   (dolist (subtree (nreverse keep-headlines))
-                     (insert subtree)
-                     (insert "\n"))))
-               (rename-file tmp-file inbox-file t)
-               (sem-core-log "purge" "PURGE" "OK"
-                             (format "Removed %d nodes from inbox-mobile.org" purged-count))
-               (message "SEM: Purged %d processed headlines" purged-count))))
-
-           (when (= hour 4)
-             (condition-case purge-cursor-err
-                 (progn
-                   (sem-core--purge-cursor-to-active-hashes keep-hashes)
+             (let* ((cursor (sem-core--read-cursor))
+                    (processed-p (lambda (hash) (assoc hash cursor)))
+                    (attempt 0)
+                    (plan nil)
+                    (done nil))
+               (while (and (not done) (< attempt sem-core-purge-max-attempts))
+                 (setq attempt (1+ attempt))
+                 (let ((original (sem-core--read-file-string inbox-file)))
+                   (setq plan (sem-core--purge-plan original processed-p))
+                   (with-temp-file tmp-file
+                     (insert (plist-get plan :content)))
+                   ;; Re-read right before the rename: abort this attempt when a
+                   ;; client uploaded a new inbox version in the meantime.
+                   (if (string= original (sem-core--read-file-string inbox-file))
+                       (progn
+                         (rename-file tmp-file inbox-file t)
+                         (setq done t))
+                     (ignore-errors (delete-file tmp-file))
+                     (sem-core-log "purge" "PURGE" "RETRY"
+                                   (format "Inbox changed during purge (attempt %d/%d)"
+                                           attempt sem-core-purge-max-attempts)))))
+               (if (not done)
+                   (sem-core-log "purge" "PURGE" "FAIL"
+                                 "Inbox kept changing during purge; skipped until next run")
+                 (let ((retained (plist-get plan :retained-hashes)))
                    (sem-core-log "purge" "PURGE" "OK"
-                                 (format "Cursor rebuilt with %d active hashes" (length keep-hashes))))
-               (error
-                (sem-core-log-error "purge" "PURGE"
-                                    (format "Cursor purge failed: %s"
-                                            (error-message-string purge-cursor-err))
-                                    nil
-                                    nil)))
-
-             (condition-case purge-retries-err
-                 (progn
-                   (sem-core--purge-retries)
-                   (sem-core-log "purge" "PURGE" "OK" "Retries reset to empty alist"))
-               (error
-                (sem-core-log-error "purge" "PURGE"
-                                    (format "Retries purge failed: %s"
-                                            (error-message-string purge-retries-err))
-                                    nil
-                                    nil)))))
+                                 (format "Removed %d nodes from inbox-mobile.org"
+                                         (plist-get plan :purged)))
+                   (message "SEM: Purged %d processed headlines" (plist-get plan :purged))
+                   (sem-core--purge-state-to-retained-hashes retained)))))))
        (error
         (message "SEM: Purge error: %s" (error-message-string err)))))))
 

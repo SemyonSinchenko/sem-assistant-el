@@ -855,7 +855,9 @@ Hash format: JSON vector of title/tags/body (using sem-router--extract-headline-
             (sem-core-purge-inbox))
           (let ((cursor (sem-core--read-cursor))
                 (retries (sem-core--read-retries)))
-            (should (assoc retained-hash cursor))
+            ;; A retained headline is unprocessed and must stay unprocessed,
+            ;; otherwise it would never be routed.
+            (should-not (assoc retained-hash cursor))
             (should-not (assoc processed-hash cursor))
             (should-not (assoc "stale" cursor))
             (should (null retries))))
@@ -957,6 +959,140 @@ Hash format: JSON vector of title/tags/body (using sem-router--extract-headline-
             (should (string-blank-p (buffer-string))))
           (should cursor-error-logged)
           (should (null (sem-core--read-retries))))
+      (sem-mock-cleanup-temp-file test-inbox)
+      (sem-mock-cleanup-temp-file test-cursor)
+      (sem-mock-cleanup-temp-file test-retries))))
+
+;;; Batch lifecycle regression tests
+
+(ert-deftest sem-core-test-planning-fires-once-per-batch ()
+  "Test barrier, watchdog and late callbacks trigger planning only once."
+  (let ((sem-core--batch-id 21)
+        (sem-core--pending-callbacks 1)
+        (sem-core--planning-fired-batch nil)
+        (planning-calls 0))
+    (cl-letf (((symbol-function 'sem-planner-run-planning-step)
+               (lambda (&optional _batch-id) (cl-incf planning-calls)))
+              ((symbol-function 'sem-core-log) (lambda (&rest _) nil))
+              ((symbol-function 'sem-core--cancel-batch-watchdog) (lambda () nil)))
+      (sem-core--batch-barrier-check 21)
+      (should (= planning-calls 1))
+      ;; Watchdog and late callbacks for the same, now closed batch.
+      (sem-core--batch-watchdog-fired 21)
+      (sem-core--batch-barrier-check 21)
+      (sem-core--batch-barrier-check 21)
+      (should (= planning-calls 1))
+      (should-not (sem-core--batch-open-p 21)))))
+
+(ert-deftest sem-core-test-watchdog-closes-batch-for-late-callbacks ()
+  "Test a callback arriving after the watchdog fired does not re-plan."
+  (let ((sem-core--batch-id 22)
+        (sem-core--pending-callbacks 2)
+        (sem-core--planning-fired-batch nil)
+        (planning-calls 0))
+    (cl-letf (((symbol-function 'sem-planner-run-planning-step)
+               (lambda (&optional _batch-id) (cl-incf planning-calls)))
+              ((symbol-function 'sem-core-log) (lambda (&rest _) nil))
+              ((symbol-function 'sem-core--cancel-batch-watchdog) (lambda () nil)))
+      (sem-core--batch-watchdog-fired 22)
+      (should (= planning-calls 1))
+      (sem-core--batch-barrier-check 22)
+      (should (= planning-calls 1)))))
+
+(ert-deftest sem-core-test-process-inbox-holds-dispatch-slot ()
+  "Test a callback completing during dispatch cannot fire planning early."
+  (let ((sem-core--batch-id 30)
+        (sem-core--pending-callbacks 0)
+        (sem-core--planning-fired-batch 30)
+        (planning-pending-values '()))
+    (cl-letf (((symbol-function 'sem-core-run-cron-guarded)
+               (lambda (_key _module _event thunk) (funcall thunk)))
+              ((symbol-function 'sem-core--cleanup-stale-temp-files) (lambda () nil))
+              ((symbol-function 'sem-core--start-batch-watchdog) (lambda (&rest _) nil))
+              ((symbol-function 'sem-core--cancel-batch-watchdog) (lambda () nil))
+              ((symbol-function 'sem-core-log) (lambda (&rest _) nil))
+              ((symbol-function 'sem-planner-run-planning-step)
+               (lambda (&optional _batch-id)
+                 (push sem-core--pending-callbacks planning-pending-values)))
+              ((symbol-function 'sem-router-process-inbox)
+               (lambda (batch-id)
+                 ;; First item completes synchronously, second stays in flight.
+                 (setq sem-core--pending-callbacks (1+ sem-core--pending-callbacks))
+                 (sem-core--batch-barrier-check batch-id)
+                 (setq sem-core--pending-callbacks (1+ sem-core--pending-callbacks)))))
+      (sem-core-process-inbox)
+      (should (= sem-core--batch-id 31))
+      (should (null planning-pending-values))
+      (should (= sem-core--pending-callbacks 1))
+      ;; The in-flight item completes: now the batch closes and plans once.
+      (sem-core--batch-barrier-check 31)
+      (should (equal planning-pending-values '(0))))))
+
+(ert-deftest sem-core-test-process-inbox-skips-while-previous-batch-in-flight ()
+  "Test a new cron run does not supersede a batch with pending callbacks."
+  (let ((sem-core--batch-id 40)
+        (sem-core--pending-callbacks 2)
+        (sem-core--planning-fired-batch nil)
+        (router-called nil))
+    (cl-letf (((symbol-function 'sem-core-run-cron-guarded)
+               (lambda (_key _module _event thunk) (funcall thunk)))
+              ((symbol-function 'sem-core-log) (lambda (&rest _) nil))
+              ((symbol-function 'sem-router-process-inbox)
+               (lambda (&rest _) (setq router-called t))))
+      (sem-core-process-inbox)
+      (should-not router-called)
+      (should (= sem-core--batch-id 40))
+      (should (= sem-core--pending-callbacks 2)))))
+
+;;; Purge regression tests
+
+(ert-deftest sem-core-test-purge-plan-keeps-preamble-and-nested-once ()
+  "Test purge keeps file preamble and does not duplicate nested headlines."
+  (let* ((content "#+TITLE: Inbox\n\n* Parent :task:\nParent body\n** Child :task:\nChild body\n* Done :link:\n")
+         (done-hash nil)
+         (plan nil))
+    (with-temp-buffer
+      (insert content)
+      (org-mode)
+      (org-element-map (org-element-parse-buffer) 'headline
+        (lambda (hl)
+          (when (string= (org-element-property :raw-value hl) "Done")
+            (setq done-hash
+                  (secure-hash 'sha256
+                               (json-encode (vector "Done" "link" ""))))))))
+    (setq plan (sem-core--purge-plan content (lambda (hash) (equal hash done-hash))))
+    (should (string-prefix-p "#+TITLE: Inbox\n" (plist-get plan :content)))
+    (should (= 1 (with-temp-buffer
+                   (insert (plist-get plan :content))
+                   (how-many "^\\*\\* Child" (point-min) (point-max)))))
+    (should-not (string-match-p "^\\* Done" (plist-get plan :content)))
+    (should (= 1 (plist-get plan :purged)))
+    (should (= 2 (length (plist-get plan :retained-hashes))))))
+
+(ert-deftest sem-core-test-purge-keeps-retry-state-of-retained-items ()
+  "Test purge keeps retry counters of retained items and leaves them unprocessed."
+  (let ((test-inbox (make-temp-file "inbox-test-"))
+        (test-cursor (make-temp-file "cursor-test-"))
+        (test-retries (make-temp-file "retries-test-")))
+    (unwind-protect
+        (let ((sem-core-inbox-file test-inbox)
+              (sem-core-cursor-file test-cursor)
+              (sem-core-retries-file test-retries)
+              (pending-hash (secure-hash 'sha256 (json-encode (vector "Pending" "task" "Body")))))
+          (with-temp-file test-inbox
+            (insert "* Pending :task:\nBody\n"))
+          (sem-core--write-cursor '(("gone" . t)))
+          (sem-core--write-retries `((,pending-hash . 2) ("gone" . 1)))
+          (cl-letf (((symbol-function 'sem-time-format-string)
+                     (lambda (format &optional _time)
+                       (if (string= format "%H") "04" "2000-01-01")))
+                    ((symbol-function 'sem-core-log) (lambda (&rest _) nil)))
+            (sem-core-purge-inbox))
+          (should-not (sem-core--is-processed pending-hash))
+          (should (equal (sem-core--read-retries) `((,pending-hash . 2))))
+          (with-temp-buffer
+            (insert-file-contents test-inbox)
+            (should (string-match-p "^\\* Pending" (buffer-string)))))
       (sem-mock-cleanup-temp-file test-inbox)
       (sem-mock-cleanup-temp-file test-cursor)
       (sem-mock-cleanup-temp-file test-retries))))

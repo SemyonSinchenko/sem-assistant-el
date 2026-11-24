@@ -115,13 +115,13 @@ Used in Pass 1 prompts to instruct the LLM to output time ranges.")
 Your output MUST follow this exact structure:
 
 * TODO <Cleaned Task Title>
+<Optional planning line: SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM> and/or DEADLINE: <YYYY-MM-DD Day>>
 :PROPERTIES:
 :ID: <injected-id-value>
 :FILETAGS: :<one-of:work:family:routine:opensource>:
+:EFFORT: <estimated duration as H:MM, e.g. 0:30 or 1:30>
 :END:
 <Normalized task notes; may be multi-line when input has meaningful multi-line context>
-<Optional: SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>>
-<Optional: DEADLINE: <YYYY-MM-DD Day>>
 
 === RULES ===
 1. :FILETAGS: MUST be exactly one of: :work:, :family:, :routine:, or :opensource:
@@ -130,7 +130,7 @@ Your output MUST follow this exact structure:
 4. Rewrite into a concise, action-oriented TODO title and a rewritten informative body; do not do cleanup-only edits
 5. CRITICAL: Preserve ALL <<SENSITIVE_N>> tokens VERBATIM in your output. These tokens represent masked sensitive content and must appear unchanged.
 6. CRITICAL: Tokens must appear at the SAME semantic position as the original sensitive content appeared in the input.
-7. If you include SCHEDULED, it must use time range format: SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>
+7. If you include SCHEDULED, it must use time range format: SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>, on the line directly below the headline (Org ignores it elsewhere)
 8. If timing intent is ambiguous or low-confidence, it is valid to omit SCHEDULED
 9. Prefer adding priority in headline token format [#A]/[#B]/[#C], but priority may be omitted when uncertain
 10. Priority strength mapping: urgent/asap/critical/important!! -> [#A], soon/high -> [#B], routine/normal -> [#C]
@@ -143,6 +143,8 @@ Your output MUST follow this exact structure:
 17. Rewrite shorthand, fragmented, or noisy input into explicit prose while preserving original intent
 18. In rewritten body text, retain inferable constraints, stakeholders, deliverables, and urgency cues from the input
 19. Do NOT invent facts that are not inferable from the provided headline/body
+20. :EFFORT: is a realistic estimate of focused work time as H:MM (0:15 to 4:00); a SCHEDULED range, when present, must match it
+21. When the task is larger than one sitting, end the body with a line `First step: <one concrete action that takes under 30 minutes>`
 
 === RELATIVE TIME ANCHOR ===
 Treat relative phrases against runtime context provided in user prompt as CURRENT DATETIME.

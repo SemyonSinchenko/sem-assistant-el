@@ -635,7 +635,7 @@ succeeds."
               (should scheduled)
               (should (= (nth 0 scheduled)
                          sem-rss-rate-limit-retry-delay-seconds))
-              (should (null cb-result))
+              (should (eq cb-result :unset))
               ;; Retry fires: second attempt succeeds.
               (apply (nth 1 scheduled) (nth 2 scheduled))
               (should (= calls 2))

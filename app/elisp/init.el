@@ -9,7 +9,7 @@
 ;; Startup sequence (must execute in strict order):
 ;; 1. Validate required env vars
 ;; 2. Load package dependencies installed at build time
-;; 3. Configure gptel with OpenRouter backend
+;; 3. Configure gptel with the LLM provider backend (DeepSeek or OpenRouter)
 ;; 4. Set hardcoded paths as globals
 ;; 5. Set security globals
 ;; 6. Initialize git repo for org-roam
@@ -74,33 +74,31 @@ This probe is side-effect free and safe for frequent watchdog/startup checks."
 (defun sem-init--validate-env ()
   "Validate required environment variables.
 Signal an error when required env vars are unset or invalid."
-  (let ((key (getenv "OPENROUTER_KEY"))
-         (model (getenv "OPENROUTER_MODEL")))
-    (when (or (null key) (string-empty-p key))
-      (error "SEM: OPENROUTER_KEY environment variable is not set or empty"))
-    (when (or (null model) (string-empty-p model))
-      (error "SEM: OPENROUTER_MODEL environment variable is not set or empty"))
+  (require 'sem-llm)
+  (let ((provider (sem-llm-provider)))
+    (unless (sem-llm-api-key)
+      (error "SEM: API key for LLM provider %s is not set (LLM_API_KEY or %s)"
+             provider
+             (plist-get (sem-llm--provider-config provider) :key-env)))
+    ;; Signals when no model is configured and the provider has no default.
+    (sem-llm--resolve-model-for-tier 'medium)
     (sem-time-client-timezone)
-    (message "SEM: Environment variables validated successfully")))
+    (message "SEM: Environment variables validated successfully (provider=%s)" provider)))
 
-(defun sem-init--resolve-openrouter-models ()
-  "Resolve effective OpenRouter model configuration.
+(defun sem-init--resolve-llm-models ()
+  "Resolve effective LLM model configuration.
 Returns a plist with keys :medium, :weak, :weak-fallback, and :models.
-Weak-tier uses `OPENROUTER_WEAK_MODEL' when non-empty; otherwise it falls back
-to `OPENROUTER_MODEL'. The returned :models list is deduplicated."
-  (cl-labels ((empty-string-p (value)
-                (or (null value)
-                    (and (stringp value) (string-empty-p (string-trim value))))))
-    (let* ((medium (getenv "OPENROUTER_MODEL"))
-           (weak-raw (getenv "OPENROUTER_WEAK_MODEL"))
-           (weak (if (empty-string-p weak-raw) medium weak-raw))
-           (weak-fallback (or (null weak-raw)
-                              (string-empty-p (string-trim weak-raw))))
-           (all-models (delete-dups (list medium weak))))
-      (list :medium medium
-            :weak weak
-            :weak-fallback weak-fallback
-            :models all-models))))
+Weak tier uses `LLM_WEAK_MODEL' (or the provider's legacy weak model
+variable) when non-empty; otherwise it falls back to the medium model.
+The returned :models list is deduplicated."
+  (require 'sem-llm)
+  (let* ((medium (plist-get (sem-llm--resolve-model-for-tier 'medium) :model))
+         (weak-resolution (sem-llm--resolve-model-for-tier 'weak))
+         (weak (plist-get weak-resolution :model)))
+    (list :medium medium
+          :weak weak
+          :weak-fallback (plist-get weak-resolution :weak-fallback)
+          :models (delete-dups (list medium weak)))))
 
 ;;; 2. Load Package Dependencies (installed at build time)
 
@@ -123,31 +121,51 @@ Signals an error when any required dependency fails to load."
               (nreverse failed)
               ", ")))))
 
-;;; 3. Configure gptel with OpenRouter Backend
+;;; 3. Configure gptel with the LLM Provider Backend
 
 (defun sem-init--configure-gptel ()
-  "Configure gptel with OpenRouter backend.
-API key is read from OPENROUTER_KEY via lambda.
-Model is read from OPENROUTER_MODEL at call time."
+  "Configure gptel with the backend of the configured LLM provider.
+The API key is read via `sem-llm-api-key' at request time.  Reasoning
+settings are applied per request by `sem-llm-request', not on the backend."
   (require 'gptel)
-  (let* ((resolved (sem-init--resolve-openrouter-models))
+  (require 'sem-llm)
+  (let* ((provider (sem-llm-provider))
+         (resolved (sem-init--resolve-llm-models))
          (medium-model (plist-get resolved :medium))
          (weak-model (plist-get resolved :weak))
          (weak-fallback (plist-get resolved :weak-fallback))
-         (registered-models (mapcar #'intern (plist-get resolved :models))))
-    (gptel-make-openai "OpenRouter"
-      :host "openrouter.ai"
-      :endpoint "/api/v1/chat/completions"
-      :stream t
-      :key (lambda () (getenv "OPENROUTER_KEY"))
-      :models registered-models
-      :request-params '(:reasoning (:exclude t)))
-    (setq gptel-backend (gptel-get-backend "OpenRouter"))
+         (registered-models (mapcar #'intern (plist-get resolved :models)))
+         (backend-name nil))
+    (pcase provider
+      ("deepseek"
+       (setq backend-name "DeepSeek")
+       (if (fboundp 'gptel-make-deepseek)
+           (gptel-make-deepseek backend-name
+             :stream t
+             :key #'sem-llm-api-key
+             :models registered-models)
+         (gptel-make-openai backend-name
+           :host "api.deepseek.com"
+           :endpoint "/chat/completions"
+           :stream t
+           :key #'sem-llm-api-key
+           :models registered-models)))
+      ("openrouter"
+       (setq backend-name "OpenRouter")
+       (gptel-make-openai backend-name
+         :host "openrouter.ai"
+         :endpoint "/api/v1/chat/completions"
+         :stream t
+         :key #'sem-llm-api-key
+         :models registered-models)))
+    (setq gptel-backend (gptel-get-backend backend-name))
     (setq gptel-model (intern medium-model))
-    (message "SEM: gptel configured with OpenRouter backend")
-    (message "SEM: LLM model config: medium=%s weak=%s%s"
+    (message "SEM: gptel configured with %s backend" backend-name)
+    (message "SEM: LLM model config: medium=%s (reasoning=%s) weak=%s (reasoning=%s)%s"
              medium-model
+             (sem-llm--reasoning-effort-for-tier 'medium)
              weak-model
+             (sem-llm--reasoning-effort-for-tier 'weak)
              (if weak-fallback " (fallback to medium)" ""))))
 
 ;;; 4. Set Hardcoded Paths as Globals
@@ -269,6 +287,7 @@ sem-prompts must load before sem-router and sem-url-capture."
     (require 'sem-git-sync)
     (require 'sem-router)
     (require 'sem-planner)
+    (require 'sem-daily-plan)
     (message "SEM: All modules loaded")))
 
 ;;; 9. Install *Messages* Redirection Hook

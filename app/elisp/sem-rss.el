@@ -314,6 +314,19 @@ This is a lazy-loading function to avoid blocking daemon startup."
 
 ;;; Text Cleaning
 
+(defconst sem-rss-error-prompt-excerpt-chars 2000
+  "Maximum number of prompt characters copied into errors.org on failure.")
+
+(defun sem-rss--prompt-excerpt (prompt)
+  "Return a bounded excerpt of PROMPT for error logging.
+Digest prompts can be ~200k characters; errors.org only needs the head."
+  (let ((text (or prompt "")))
+    (if (<= (length text) sem-rss-error-prompt-excerpt-chars)
+        text
+      (format "%s\n[... truncated, %d chars total]"
+              (substring text 0 sem-rss-error-prompt-excerpt-chars)
+              (length text)))))
+
 (defun sem-rss--clean-text (html)
   "Aggressively strip HTML to save tokens."
   (when html
@@ -321,7 +334,8 @@ This is a lazy-loading function to avoid blocking daemon startup."
       (insert html)
       (goto-char (point-min))
       ;; Remove script and style blocks
-      (while (re-search-forward "<\\(script\\|style\\)[^>]*>\\([\\s\\S]*?\\)</\\1>" nil t)
+      ;; Emacs regexps have no \s/\S classes; \(?:.\|\n\) matches any char.
+      (while (re-search-forward "<\\(script\\|style\\)[^>]*>\\(?:.\\|\n\\)*?</\\1>" nil t)
         (replace-match " " nil nil))
       ;; Remove all HTML tags
       (goto-char (point-min))
@@ -520,18 +534,19 @@ output (DLQ)."
                             ((plist-get info :error)
                              (sem-core-log-error "rss" digest-type
                                                  (format "API error: %s" (plist-get info :error))
-                                                 (plist-get context :prompt)
+                                                 (sem-rss--prompt-excerpt (plist-get context :prompt))
                                                  nil)
                              (setq success nil))
                             ;; Malformed/empty response - log DLQ, do not write file
                             (t
                              (sem-core-log-error "rss" digest-type
                                                  "Malformed or empty LLM response"
-                                                 (plist-get context :prompt)
+                                                 (sem-rss--prompt-excerpt (plist-get context :prompt))
                                                  response)
                              (setq success nil)))
-                           ;; Call the completion callback if provided
-                           (when callback
+                           ;; Call the completion callback on the terminal
+                           ;; outcome only; a scheduled 429 retry calls it later.
+                           (when (and callback (not deferred))
                              (funcall callback success context))))
                        (list :target-path target-path :title-prefix title-prefix
                              :from-org from-org :to-org to-org :prompt prompt

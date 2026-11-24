@@ -163,8 +163,8 @@ Called with RESULT and CONTEXT."
   (sem-async-test--reset)
   (let ((start-time (float-time)))
     ;; Mock dependencies
-    (cl-letf (((symbol-function 'sem-url-capture--fetch-url)
-               (lambda (_url &optional _timeout) (list :content "Mock content")))
+    (cl-letf (((symbol-function 'sem-url-capture--fetch-url-async)
+               (sem-mock-url-fetch-async (lambda (_url &optional _timeout) (list :content "Mock content"))))
               ((symbol-function 'sem-url-capture--sanitize-text)
                (lambda (text) "Sanitized"))
               ((symbol-function 'sem-security-sanitize-for-llm)
@@ -184,8 +184,8 @@ Called with RESULT and CONTEXT."
   (sem-async-test--reset)
   (let ((mock-filepath "/data/org-roam/org-files/20240101120000-test.org"))
     ;; Mock dependencies
-    (cl-letf (((symbol-function 'sem-url-capture--fetch-url)
-               (lambda (_url &optional _timeout) (list :content "Mock content")))
+    (cl-letf (((symbol-function 'sem-url-capture--fetch-url-async)
+               (sem-mock-url-fetch-async (lambda (_url &optional _timeout) (list :content "Mock content"))))
               ((symbol-function 'sem-url-capture--sanitize-text)
                (lambda (text) "Sanitized"))
               ((symbol-function 'sem-security-sanitize-for-llm)
@@ -199,7 +199,7 @@ Called with RESULT and CONTEXT."
               ((symbol-function 'sem-security-sanitize-urls)
                (lambda (text) text))
               ((symbol-function 'sem-url-capture--validate-and-save)
-               (lambda (response url) mock-filepath)))
+               (lambda (_response _url &optional _masked) mock-filepath)))
       (sem-url-capture-process "http://example.com" #'sem-async-test--callback-2arg)
       ;; Callback should receive the filepath
       (should sem-async-test--callback-called)
@@ -241,7 +241,7 @@ Called with RESULT and CONTEXT."
   ;; Mock sem-llm-request to simulate API error
   (cl-letf (((symbol-function 'sem-llm-request)
              (lambda (prompt system callback context &optional _tier)
-                (funcall callback nil '(:error "Rate limited") context)
+                (funcall callback nil '(:error "Internal server error") context)
                 nil))
             ((symbol-function 'sem-core-log-error)
              (lambda (&rest args) nil)))

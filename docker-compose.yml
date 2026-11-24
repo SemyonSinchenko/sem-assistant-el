@@ -9,8 +9,17 @@ services:
       - ./logs:/var/log/sem:rw,z
       - ~/.ssh/vps-org-roam:/root/.ssh:ro
     environment:
-      - OPENROUTER_KEY=${OPENROUTER_KEY}
-      - OPENROUTER_MODEL=${OPENROUTER_MODEL}
+      # LLM provider: deepseek (default) or openrouter (legacy, kept for rollback).
+      - LLM_PROVIDER=${LLM_PROVIDER:-deepseek}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-deepseek-v4-pro}
+      - LLM_WEAK_MODEL=${LLM_WEAK_MODEL:-deepseek-flash}
+      # Thinking per tier: none (disabled) | low | high | max.
+      - LLM_REASONING_EFFORT=${LLM_REASONING_EFFORT:-none}
+      - LLM_WEAK_REASONING_EFFORT=${LLM_WEAK_REASONING_EFFORT:-none}
+      - OPENROUTER_KEY=${OPENROUTER_KEY:-}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-}
       - OPENROUTER_WEAK_MODEL=${OPENROUTER_WEAK_MODEL:-}
       - SEM_LLM_REQUEST_TIMEOUT_SECONDS=${SEM_LLM_REQUEST_TIMEOUT_SECONDS:-300}
       - CLIENT_TIMEZONE=${CLIENT_TIMEZONE}
@@ -25,7 +34,7 @@ services:
     restart: unless-stopped
 
   webdav:
-    image: docker.io/library/httpd:2.4
+    image: docker.io/library/httpd:2.4.69
     container_name: sem-webdav
     volumes:
       - ./data:/data:rw,z
@@ -57,7 +66,7 @@ services:
     restart: unless-stopped
 
   certbot:
-    image: certbot/certbot:latest
+    image: certbot/certbot:v5.10.0
     container_name: sem-certbot
     profiles:
       - certbot
@@ -75,5 +84,56 @@ services:
       - "80:80"
     entrypoint: ["/bin/sh", "-c"]
     command:
-      - 'set -eu; if [ -z "$${WEBDAV_DOMAIN}" ]; then echo "[certbot] ERROR: WEBDAV_DOMAIN is not set."; exit 1; fi; if [ -z "$${ORGANICE_DOMAIN}" ]; then echo "[certbot] ERROR: ORGANICE_DOMAIN is not set."; exit 1; fi; if [ -z "$${CERTBOT_EMAIL}" ]; then echo "[certbot] ERROR: CERTBOT_EMAIL is not set."; exit 1; fi; certbot_flags=""; if [ "$${CERTBOT_STAGING}" = "true" ]; then certbot_flags="--staging"; echo "[certbot] Staging mode enabled (CERTBOT_STAGING=true)."; else echo "[certbot] Production mode enabled (CERTBOT_STAGING=false)."; fi; issue_cert() { domain="$${1}"; echo "[certbot] Requesting initial certificate for $${domain} via HTTP-01 on port 80."; if certbot certonly --standalone --non-interactive --agree-tos --email "$${CERTBOT_EMAIL}" --preferred-challenges http --cert-name "$${domain}" -d "$${domain}" $$certbot_flags; then echo "[certbot] Initial certificate request succeeded for $${domain}."; else echo "[certbot] ERROR: Initial issuance failed for $${domain}."; echo "[certbot] Verify DNS resolves $${domain} to this host, inbound TCP/80 is open, and no process is occupying port 80."; exit 1; fi; }; issue_cert "$${WEBDAV_DOMAIN}"; issue_cert "$${ORGANICE_DOMAIN}"; while true; do echo "[certbot] Running renewal check for all configured lineages."; if certbot renew --standalone --non-interactive --preferred-challenges http $$certbot_flags; then echo "[certbot] Renewal check complete for all lineages."; else echo "[certbot] ERROR: Renewal failed. Check DNS, firewall, and ACME reachability for $${WEBDAV_DOMAIN} and $${ORGANICE_DOMAIN}."; fi; echo "[certbot] Sleeping for $${CERTBOT_RENEW_INTERVAL} before next renewal check."; sleep "$${CERTBOT_RENEW_INTERVAL}"; done'
+      - |
+        set -eu
+        if [ -z "$${WEBDAV_DOMAIN}" ]; then echo "[certbot] ERROR: WEBDAV_DOMAIN is not set."; exit 1; fi
+        if [ -z "$${ORGANICE_DOMAIN}" ]; then echo "[certbot] ERROR: ORGANICE_DOMAIN is not set."; exit 1; fi
+        if [ -z "$${CERTBOT_EMAIL}" ]; then echo "[certbot] ERROR: CERTBOT_EMAIL is not set."; exit 1; fi
+        # --staging only applies to the first issuance of a lineage. Renewals use
+        # the CA stored in each lineage's renewal config, so a staging flag left
+        # on can never replace a production certificate with an untrusted one.
+        issue_flags=""
+        if [ "$${CERTBOT_STAGING}" = "true" ]; then
+          issue_flags="--staging"
+          echo "[certbot] Staging mode enabled for NEW certificates (CERTBOT_STAGING=true)."
+        else
+          echo "[certbot] Production mode enabled for NEW certificates (CERTBOT_STAGING=false)."
+        fi
+        issue_cert() {
+          domain="$${1}"
+          if [ -f "/etc/letsencrypt/live/$${domain}/fullchain.pem" ]; then
+            echo "[certbot] Existing lineage found for $${domain}; leaving it to the renewal loop."
+            return 0
+          fi
+          echo "[certbot] Requesting initial certificate for $${domain} via HTTP-01 on port 80."
+          if certbot certonly --standalone --non-interactive --agree-tos --email "$${CERTBOT_EMAIL}" --preferred-challenges http --cert-name "$${domain}" -d "$${domain}" $$issue_flags; then
+            echo "[certbot] Initial certificate request succeeded for $${domain}."
+          else
+            echo "[certbot] ERROR: Initial issuance failed for $${domain}."
+            echo "[certbot] Verify DNS resolves $${domain} to this host, inbound TCP/80 is open, and no process is occupying port 80."
+            # Back off before exiting: restart: unless-stopped would otherwise
+            # retry immediately and hit Let's Encrypt failed-validation limits.
+            echo "[certbot] Sleeping 1h before exit to respect ACME rate limits."
+            sleep 3600
+            exit 1
+          fi
+        }
+        issue_cert "$${WEBDAV_DOMAIN}"
+        issue_cert "$${ORGANICE_DOMAIN}"
+        while true; do
+          echo "[certbot] Running renewal check for all configured lineages."
+          if certbot renew --standalone --non-interactive --preferred-challenges http; then
+            echo "[certbot] Renewal check complete for all lineages."
+          else
+            echo "[certbot] ERROR: Renewal failed. Check DNS, firewall, and ACME reachability for $${WEBDAV_DOMAIN} and $${ORGANICE_DOMAIN}."
+          fi
+          for domain in "$${WEBDAV_DOMAIN}" "$${ORGANICE_DOMAIN}"; do
+            if grep -qs "acme-staging" "/etc/letsencrypt/renewal/$${domain}.conf"; then
+              echo "[certbot] WARNING: lineage $${domain} uses the STAGING CA; browsers and clients will not trust it."
+              echo "[certbot] WARNING: to switch, set CERTBOT_STAGING=false and run: certbot certonly --standalone --force-renewal --cert-name $${domain} -d $${domain}"
+            fi
+          done
+          echo "[certbot] Sleeping for $${CERTBOT_RENEW_INTERVAL} before next renewal check."
+          sleep "$${CERTBOT_RENEW_INTERVAL}"
+        done
     restart: unless-stopped

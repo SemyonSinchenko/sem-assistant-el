@@ -42,8 +42,9 @@ LOCAL_GIT_SYNC_UNAVAILABLE_REMOTE="$TEST_DATA_DIR/local-git-sync-missing-origin.
 # Test-specific port mapping (avoids privileged port 443)
 export WEBDAV_PORT=16065
 
-# Test-specific model name
-export OPENROUTER_MODEL="qwen/qwen3.8-27b"
+# Test-specific LLM provider and model (override via environment).
+export LLM_PROVIDER="${LLM_PROVIDER:-deepseek}"
+export LLM_MODEL="${LLM_MODEL:-deepseek-flash}"
 
 # Test-specific runtime timezone required by startup validation.
 export CLIENT_TIMEZONE="${CLIENT_TIMEZONE:-Etc/UTC}"
@@ -98,15 +99,20 @@ echo "Mode: $INTEGRATION_MODE"
 echo "CLIENT_TIMEZONE: ${CLIENT_TIMEZONE}"
 
 if [[ "$INTEGRATION_MODE" == "$PAID_INBOX_MODE" ]]; then
-    # Paid inbox/LLM path keeps existing behavior and still requires OPENROUTER_KEY.
-    if [[ -z "${OPENROUTER_KEY:-}" ]]; then
-        echo "ERROR: OPENROUTER_KEY environment variable is not set" >&2
+    # Paid inbox/LLM path requires an API key for the configured provider.
+    if [[ "$LLM_PROVIDER" == "openrouter" ]]; then
+        provider_key_var="OPENROUTER_KEY"
+    else
+        provider_key_var="DEEPSEEK_API_KEY"
+    fi
+    if [[ -z "${LLM_API_KEY:-}" && -z "${!provider_key_var:-}" ]]; then
+        echo "ERROR: ${provider_key_var} (or LLM_API_KEY) environment variable is not set" >&2
         echo "Integration tests require real LLM API access." >&2
         exit 1
     fi
-    echo "OPENROUTER_KEY is set (masked)"
+    echo "LLM provider ${LLM_PROVIDER}: API key is set (masked)"
 elif [[ "$INTEGRATION_MODE" == "$LOCAL_GIT_SYNC_MODE" ]]; then
-    echo "Running local git-sync validation without OpenRouter or network APIs"
+    echo "Running local git-sync validation without LLM or network APIs"
 else
     echo "ERROR: Unsupported SEM_INTEGRATION_MODE: $INTEGRATION_MODE" >&2
     echo "Supported values: $PAID_INBOX_MODE, $LOCAL_GIT_SYNC_MODE" >&2

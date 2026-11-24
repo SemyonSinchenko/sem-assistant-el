@@ -25,46 +25,53 @@
 
 ;;; Anonymization Tests
 
-(ert-deftest sem-planner-test-anonymize-tasks-returns-empty-when-no-file ()
-  "Test that anonymize returns empty string when tasks file does not exist."
+(ert-deftest sem-planner-test-schedule-context-returns-empty-when-no-file ()
+  "Test that schedule context is empty when tasks file does not exist."
   (let ((sem-planner-tasks-file "/nonexistent/tasks.org"))
-    (should (string-empty-p (sem-planner--anonymize-tasks)))))
+    (should (string-empty-p (sem-planner--schedule-context)))))
 
-(ert-deftest sem-planner-test-anonymize-tasks-strips-titles ()
-  "Test that anonymize removes task titles and IDs."
-  (let* ((tasks-content "* TODO Test task with a very long title that should be stripped :work:
+(ert-deftest sem-planner-test-schedule-context-includes-titles-not-ids-or-bodies ()
+  "Test schedule context carries title, time, priority and category only."
+  (let* ((now (encode-time 0 0 8 15 3 2024 "Etc/UTC"))
+         (content "* TODO [#A] Prepare board deck :work:
 :PROPERTIES:
 :ID: abc-123
-:SCHEDULED: <2024-03-15 09:00-10:30>
 :END:
-Some description here")
-         (tmp (sem-planner-test--create-temp-tasks-file tasks-content)))
-    (unwind-protect
-        (let ((result (sem-planner--anonymize-tasks)))
-          (should (stringp result))
-          (should-not (string-match-p "Test task" result))
-          (should-not (string-match-p "abc-123" result))
-          (should-not (string-match-p "Some description" result)))
-      (sem-mock-cleanup-temp-file tmp))))
+SCHEDULED: <2024-03-15 Fri 14:00-16:00>
+Secret body text")
+         (result (cl-letf (((symbol-function 'sem-time-client-timezone)
+                            (lambda () "Etc/UTC")))
+                   (sem-planner--schedule-context-content content now))))
+    (should (string-match-p "2024-03-15 14:00-16:00 busy PRIORITY:A TAG:work | Prepare board deck"
+                            result))
+    (should-not (string-match-p "abc-123" result))
+    (should-not (string-match-p "Secret body" result))))
 
-(ert-deftest sem-planner-test-anonymize-tasks-preserves-time-priority-tag ()
-  "Test that anonymize preserves time, priority, and tag."
-  (let* ((tasks-content "* TODO Another task :routine:
-:PROPERTIES:
-:ID: def-456
-:SCHEDULED: <2024-03-15 14:00-16:00>
-:END:")
-         (tmp (sem-planner-test--create-temp-tasks-file tasks-content)))
-    (unwind-protect
-        (let ((result (sem-planner--anonymize-tasks)))
-          (should (string-match-p "2024-03-15" result))
-          (should (string-match-p "14:00-16:00" result))
-          (should (string-match-p "PRIORITY:" result))
-          (should (string-match-p "TAG:routine" result)))
-      (sem-mock-cleanup-temp-file tmp))))
+(ert-deftest sem-planner-test-schedule-context-skips-done-and-out-of-window ()
+  "Test schedule context keeps only open tasks from today to +14 days."
+  (let* ((now (encode-time 0 0 8 15 3 2024 "Etc/UTC"))
+         (content "* TODO Yesterday task :routine:
+SCHEDULED: <2024-03-14 Thu 10:00-11:00>
+* DONE Finished today :routine:
+SCHEDULED: <2024-03-15 Fri 09:00-10:00>
+* TODO Later today :routine:
+SCHEDULED: <2024-03-15 Fri 07:00-07:30>
+* TODO Far future :work:
+SCHEDULED: <2024-04-20 Sat 10:00-11:00>
+* TODO Deadline soon :work:
+DEADLINE: <2024-03-20 Wed>
+")
+         (result (cl-letf (((symbol-function 'sem-time-client-timezone)
+                            (lambda () "Etc/UTC")))
+                   (sem-planner--schedule-context-content content now))))
+    (should (string-match-p "Later today" result))
+    (should (string-match-p "(deadline) | Deadline soon" result))
+    (should-not (string-match-p "Yesterday task" result))
+    (should-not (string-match-p "Finished today" result))
+    (should-not (string-match-p "Far future" result))))
 
-(ert-deftest sem-planner-test-anonymize-temp-tasks-includes-state-priority-and-schedule ()
-  "Test that Pass 2 anonymized task lines include state and priority context." 
+(ert-deftest sem-planner-test-temp-tasks-context-includes-state-priority-title ()
+  "Test that Pass 2 task lines include state, priority, effort and title."
   (let* ((temp-tasks (concat "* TODO Existing scheduled task :routine:\n"
                              ":PROPERTIES:\n"
                              ":ID: existing-scheduled-123\n"
@@ -76,21 +83,26 @@ Some description here")
                              ":ID: existing-unscheduled-123\n"
                              ":END:\n"
                              "\n"
-                             "* TODO [#A] New task :work:\n"
+                             "* TODO [#A] New task\n"
                              ":PROPERTIES:\n"
                              ":ID: new-123\n"
-                             ":END:\n"))
+                             ":FILETAGS: :family:\n"
+                             ":EFFORT: 1:30\n"
+                             ":SEM_FIXED_SCHEDULE: t\n"
+                             ":END:\n"
+                             "Body that must not leak\n"))
          (existing-index (make-hash-table :test #'equal)))
     (puthash "existing-scheduled-123" '(:id "existing-scheduled-123") existing-index)
     (puthash "existing-unscheduled-123" '(:id "existing-unscheduled-123") existing-index)
-    (let ((result (sem-planner--anonymize-temp-tasks temp-tasks existing-index)))
+    (let ((result (sem-planner--temp-tasks-context temp-tasks existing-index)))
       (should (string-match-p "ID: existing-scheduled-123" result))
       (should (string-match-p "STATE:pre-existing-scheduled" result))
       (should (string-match-p "ID: existing-unscheduled-123" result))
       (should (string-match-p "STATE:pre-existing-unscheduled" result))
-      (should (string-match-p "ID: new-123" result))
-      (should (string-match-p "PRIORITY:A" result))
-      (should (string-match-p "STATE:newly-generated" result)))))
+      (should (string-match-p "ID: new-123 | TAG:family | PRIORITY:A" result))
+      (should (string-match-p "STATE:newly-generated (fixed by user) | EFFORT:1:30" result))
+      (should (string-match-p "TITLE: New task" result))
+      (should-not (string-match-p "must not leak" result)))))
 
 (ert-deftest sem-planner-test-merge-scheduling-preserves-preexisting-tasks ()
   "Test that merge preserves pre-existing task schedule states."
@@ -186,8 +198,8 @@ Some description here")
     (should (string-match-p "SCHEDULED: <2099-01-02 16:00-17:00>" merged))
     (should-not (string-match-p "SCHEDULED: <2024-06-01 09:00-10:00>" merged))))
 
-(ert-deftest sem-planner-test-merge-scheduling-skips-fixed-schedule-exception-title ()
-  "Test fixed-schedule exception title keeps Pass 1 fixture schedule unchanged."
+(ert-deftest sem-planner-test-merge-scheduling-skips-user-fixed-schedule ()
+  "Test a task whose capture carried its own schedule keeps it unchanged."
   (let* ((temp-tasks (concat "* TODO [#C] process quarterly financial reports :routine:\n"
                              ":PROPERTIES:\n"
                              ":ID: fixed-001\n"
@@ -201,6 +213,7 @@ Some description here")
     (puthash "fixed-001"
              '(:id "fixed-001"
                :title "[#C] process quarterly financial reports"
+               :fixed t
                :state newly-generated
                :priority ?C)
              task-metadata)
@@ -561,6 +574,35 @@ ID: b96db7b3-e2cd-4983-ba79-5dd26a6d5215 | (unscheduled)"))
                (lambda (&rest _) nil)))
       (sem-planner-run-planning-step 88)
       (should-not delete-called))))
+
+;;; Planning line placement
+
+(ert-deftest sem-planner-test-merge-puts-scheduled-on-planning-line ()
+  "Test merged SCHEDULED lands directly under the headline, where Org reads it."
+  (let* ((temp-tasks (concat "* TODO New task :work:\n"
+                             ":PROPERTIES:\n"
+                             ":ID: plan-001\n"
+                             ":END:\n"
+                             "Body\n"
+                             "DEADLINE: <2099-01-05 Mon>\n"))
+         (task-metadata (make-hash-table :test #'equal)))
+    (puthash "plan-001" '(:id "plan-001" :state newly-generated :priority nil) task-metadata)
+    (let ((merged (sem-planner--merge-scheduling-into-tasks
+                   temp-tasks '(("plan-001" . "<2099-01-02 12:00-13:00>"))
+                   task-metadata '() "2026-03-24T13:00:00Z")))
+      (should (string-prefix-p
+               "* TODO New task :work:\nSCHEDULED: <2099-01-02 12:00-13:00> DEADLINE: <2099-01-05 Mon>\n:PROPERTIES:"
+               merged)))))
+
+(ert-deftest sem-planner-test-planning-reads-legacy-misplaced-lines ()
+  "Test SCHEDULED written after the drawer by older versions is still read."
+  (with-temp-buffer
+    (insert "* TODO Legacy :work:\n:PROPERTIES:\n:ID: x\n:END:\nSCHEDULED: <2026-03-20 Fri 09:00-10:00>\n* TODO Next\n")
+    (org-mode)
+    (let ((headlines (org-element-map (org-element-parse-buffer) 'headline #'identity)))
+      (should (equal (sem-planner--planning (car headlines) 'scheduled)
+                     "<2026-03-20 Fri 09:00-10:00>"))
+      (should-not (sem-planner--planning (cadr headlines) 'scheduled)))))
 
 (provide 'sem-planner-test)
 ;;; sem-planner-test.el ends here

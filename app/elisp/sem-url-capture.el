@@ -82,6 +82,74 @@ Signals an error if trafilatura binary is not found."
       (when (buffer-live-p temp-buffer)
         (kill-buffer temp-buffer)))))
 
+(defun sem-url-capture--fetch-url-async (url timeout-seconds callback)
+  "Fetch content from URL with trafilatura without blocking Emacs.
+
+Runs `trafilatura -u URL --markdown --no-comments --fast` as an
+asynchronous subprocess, so the daemon keeps serving emacsclient requests
+(cron jobs and the readiness watchdog) while a slow page is fetched.  The
+process is killed after TIMEOUT-SECONDS.
+
+CALLBACK is called exactly once with a plist in the same shape as
+`sem-url-capture--fetch-url' returns: :content on success, or :kind
+\(`timeout' or `error') and :message on failure.  Returns the value of
+CALLBACK when it ran synchronously, t otherwise.
+
+Signals an error if trafilatura binary is not found."
+  (unless (executable-find "trafilatura")
+    (error "URL Catcher: trafilatura binary not found in PATH"))
+  (let* ((stdout (generate-new-buffer " *trafilatura*"))
+         (stderr (generate-new-buffer " *trafilatura-stderr*"))
+         (done nil)
+         (timer nil)
+         (proc nil)
+         (finish
+          (lambda (result)
+            (unless done
+              (setq done t)
+              (when timer (cancel-timer timer))
+              (ignore-errors (when (process-live-p proc) (delete-process proc)))
+              (dolist (buf (list stdout stderr))
+                (when (buffer-live-p buf) (kill-buffer buf)))
+              (condition-case cb-err
+                  (funcall callback result)
+                (error
+                 (sem-core-log-error "url-capture" "URL-CAPTURE"
+                                     (format "Fetch callback error: %s"
+                                             (error-message-string cb-err))
+                                     url nil)))))))
+    (setq proc
+          (make-process
+           :name "trafilatura"
+           :buffer stdout
+           :stderr stderr
+           :command (list "trafilatura" "-u" url "--markdown" "--no-comments" "--fast")
+           :connection-type 'pipe
+           :noquery t
+           :sentinel
+           (lambda (process _event)
+             (unless (process-live-p process)
+               (let ((status (process-status process))
+                     (code (process-exit-status process)))
+                 (funcall finish
+                          (if (and (eq status 'exit) (= code 0))
+                              (list :content
+                                    (with-current-buffer stdout
+                                      (buffer-substring-no-properties
+                                       (point-min) (point-max))))
+                            (list :kind 'error
+                                  :message (format "trafilatura failed (%s %s)"
+                                                   status code)))))))))
+    (when (and timeout-seconds (> timeout-seconds 0))
+      (setq timer
+            (run-at-time timeout-seconds nil
+                         (lambda ()
+                           (funcall finish
+                                    (list :kind 'timeout
+                                          :message (format "trafilatura timed out after %ds"
+                                                           (ceiling timeout-seconds))))))))
+    t))
+
 (defun sem-url-capture--remaining-seconds (deadline)
   "Return remaining seconds until DEADLINE, or 0 when expired."
   (max 0.0 (float-time (time-subtract deadline (current-time)))))
@@ -264,10 +332,12 @@ The returned path is always under the resolved notes root."
 
 ;;; Validation and Save
 
-(defun sem-url-capture--validate-and-save (llm-response url)
+(defun sem-url-capture--validate-and-save (llm-response url &optional masked-response)
   "Validate LLM-RESPONSE and save as org-roam node.
 
 URL is the original article URL for error reporting.
+MASKED-RESPONSE is the LLM output before sensitive blocks were restored;
+when given, it is what gets logged on failure instead of LLM-RESPONSE.
 
 Validation steps:
 1. Write to temporary buffer
@@ -318,8 +388,8 @@ Returns the filepath on success, nil on validation failure."
                 (sem-core-log-error "url-capture" "URL-CAPTURE"
                                     (format "Missing required elements: props=%s, id=%s, title=%s"
                                             has-properties has-id has-title)
-                                    llm-response
-                                    llm-response)
+                                    url
+                                    (or masked-response llm-response))
                 (cl-return-from sem-url-capture--validate-and-save nil))
               (goto-char (point-min))
               (while (and (not roam-ref-url) (not (eobp)))
@@ -359,7 +429,7 @@ Returns the filepath on success, nil on validation failure."
                 (sem-core-log-error "url-capture" "URL-CAPTURE"
                                     "Invalid URL contract: require canonical matching ROAM_REFS and Summary Source link"
                                     url
-                                    llm-response)
+                                    (or masked-response llm-response))
                 (cl-return-from sem-url-capture--validate-and-save nil)))
 
             ;; Extract title for slug generation
@@ -383,8 +453,8 @@ Returns the filepath on success, nil on validation failure."
                   (setq filepath fpath))
               (sem-core-log-error "url-capture" "URL-CAPTURE"
                                   "Could not extract title from #+title:"
-                                  llm-response
-                                  llm-response)
+                                  url
+                                  (or masked-response llm-response))
               nil)))
       (when (buffer-live-p temp-buf)
         (kill-buffer temp-buf)))
@@ -392,47 +462,14 @@ Returns the filepath on success, nil on validation failure."
 
 ;;; Non-Interactive Entry Point
 
-(defun sem-url-capture-process (url &optional callback)
-  "Fetch URL content and create an org-roam node via LLM.
-
-URL is the original article URL.
-CALLBACK is an optional function of (filepath context) called when complete.
-  - FILEPATH is the saved file path on success, nil on failure.
-  - CONTEXT contains :url and other metadata.
-
-This is the non-interactive entry point callable from sem-router.el.
-It orchestrates the full pipeline:
-1. Fetch content using trafilatura
-2. Sanitize text for token efficiency
-3. Apply security masking (sanitize sensitive blocks for LLM)
-4. Extract umbrella nodes from org-roam database
-5. Build prompts for LLM
-6. Request LLM to generate org-roam node via sem-llm-request
-7. Validate and save the result
-
-Returns t when async processing starts successfully.
-Returns nil when setup fails before async execution starts.
-
-The CALLBACK is invoked when complete.
-If no callback is provided, processing still happens asynchronously."
-  (cl-block sem-url-capture-process
+(defun sem-url-capture--process-fetched (url callback deadline fetch-result)
+  "Continue URL capture for URL after the fetch finished with FETCH-RESULT.
+CALLBACK and DEADLINE are as in `sem-url-capture-process'.  FETCH-RESULT is
+the plist produced by `sem-url-capture--fetch-url-async'.
+Returns t when the LLM request was started, nil on failure."
+  (cl-block sem-url-capture--process-fetched
     (condition-case err
-        (let* ((deadline (time-add (current-time)
-                                   (seconds-to-time sem-url-capture-timeout-seconds)))
-               (remaining-seconds (sem-url-capture--remaining-seconds deadline)))
-          (sem-core-log "url-capture" "URL-CAPTURE" "OK"
-                        (format "Processing URL: %s" url)
-                        nil)
-
-        (when (<= remaining-seconds 0)
-          (sem-url-capture--log-timeout-fail url "orchestration")
-          (when callback
-            (funcall callback nil (list :url url :failure-kind 'timeout)))
-          (cl-return-from sem-url-capture-process nil))
-
-        ;; Fetch URL content
-        (let* ((fetch-result (sem-url-capture--fetch-url url remaining-seconds))
-               (raw-content (plist-get fetch-result :content))
+        (let* ((raw-content (plist-get fetch-result :content))
                (fetch-kind (plist-get fetch-result :kind)))
           (if raw-content
               (let* ((sanitized (sem-url-capture--sanitize-text raw-content))
@@ -452,12 +489,13 @@ If no callback is provided, processing still happens asynchronously."
                                  nil)
                    (sem-core-log-error "security" "URL-CAPTURE"
                                        (error-message-string sanitize-err)
-                                       sanitized
+                                       (format "[content withheld: %d chars] %s"
+                                               (length sanitized) url)
                                        nil
                                        (list :priority "[#A]" :tags '("security")))
                    (when callback
                      (funcall callback nil (list :url url :failure-kind 'security-malformed)))
-                   (cl-return-from sem-url-capture-process nil)))
+                   (cl-return-from sem-url-capture--process-fetched nil)))
 
                 (let* ((umbrella-nodes (sem-url-capture--get-umbrella-nodes))
                        (system-prompt (sem-url-capture--build-system-prompt))
@@ -470,7 +508,7 @@ If no callback is provided, processing still happens asynchronously."
                   (sem-url-capture--log-timeout-fail url "orchestration")
                   (when callback
                     (funcall callback nil (list :url url :failure-kind 'timeout)))
-                  (cl-return-from sem-url-capture-process nil))
+                  (cl-return-from sem-url-capture--process-fetched nil))
 
                 (setq timeout-timer
                       (run-at-time llm-remaining-seconds nil
@@ -498,7 +536,8 @@ Calls sem-url-capture--validate-and-save with restored sensitive content."
                                         (if (and response (not (string-empty-p response)))
                                             ;; Restore sensitive blocks before validation
                                             (let ((restored-response (sem-security-restore-from-llm response (plist-get context :security-blocks))))
-                                              (setq filepath (sem-url-capture--validate-and-save restored-response url))
+                                              (setq filepath (sem-url-capture--validate-and-save
+                                                              restored-response url response))
                                               (when filepath
                                                 (setq context (plist-put context :security-blocks nil))))
                                           (progn
@@ -539,7 +578,7 @@ Calls sem-url-capture--validate-and-save with restored sensitive content."
                 (funcall callback nil (if (eq fetch-kind 'timeout)
                                           (list :url url :failure-kind 'timeout)
                                         (list :url url))))
-              nil))))
+              nil)))
       (error
        (sem-core-log-error "url-capture" "URL-CAPTURE"
                            (error-message-string err)
@@ -549,6 +588,64 @@ Calls sem-url-capture--validate-and-save with restored sensitive content."
        (when callback
          (funcall callback nil (list :url url)))
        nil))))
+
+
+(defun sem-url-capture-process (url &optional callback)
+  "Fetch URL content and create an org-roam node via LLM.
+
+URL is the original article URL.
+CALLBACK is an optional function of (filepath context) called when complete.
+  - FILEPATH is the saved file path on success, nil on failure.
+  - CONTEXT contains :url and other metadata.
+
+This is the non-interactive entry point callable from sem-router.el.
+It orchestrates the full pipeline:
+1. Fetch content using trafilatura
+2. Sanitize text for token efficiency
+3. Apply security masking (sanitize sensitive blocks for LLM)
+4. Extract umbrella nodes from org-roam database
+5. Build prompts for LLM
+6. Request LLM to generate org-roam node via sem-llm-request
+7. Validate and save the result
+
+Returns t when async processing starts successfully.
+Returns nil when setup fails before async execution starts.
+The fetch runs as an asynchronous subprocess; when a test double completes
+it synchronously, the result of the remaining pipeline is returned.
+
+The CALLBACK is invoked when complete.
+If no callback is provided, processing still happens asynchronously."
+  (cl-block sem-url-capture-process
+    (condition-case err
+        (let* ((deadline (time-add (current-time)
+                                   (seconds-to-time sem-url-capture-timeout-seconds)))
+               (remaining-seconds (sem-url-capture--remaining-seconds deadline)))
+          (sem-core-log "url-capture" "URL-CAPTURE" "OK"
+                        (format "Processing URL: %s" url)
+                        nil)
+
+        (when (<= remaining-seconds 0)
+          (sem-url-capture--log-timeout-fail url "orchestration")
+          (when callback
+            (funcall callback nil (list :url url :failure-kind 'timeout)))
+          (cl-return-from sem-url-capture-process nil))
+
+        ;; Fetch URL content asynchronously; the pipeline continues in
+        ;; `sem-url-capture--process-fetched'.
+        (sem-url-capture--fetch-url-async
+         url remaining-seconds
+         (lambda (fetch-result)
+           (sem-url-capture--process-fetched url callback deadline fetch-result))))
+      (error
+       (sem-core-log-error "url-capture" "URL-CAPTURE"
+                           (error-message-string err)
+                           url
+                           nil)
+       ;; Call callback with failure if provided
+       (when callback
+         (funcall callback nil (list :url url)))
+       nil))))
+
 
 (provide 'sem-url-capture)
 ;;; sem-url-capture.el ends here
