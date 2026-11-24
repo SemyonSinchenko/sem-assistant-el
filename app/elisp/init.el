@@ -214,9 +214,7 @@ This is pre-wiring for future github-integration."
           (insert "# org-roam database files\n")
           (insert "org-roam.db\n")
           (insert "*.db-shm\n")
-          (insert "*.db-wal\n")
-          (insert "# daemon-managed read-only copies\n")
-          (insert "sem/\n"))))
+          (insert "*.db-wal\n"))))
     (message "SEM: Git repo ready")))
 
 ;;; 7. Database Initialization
@@ -291,6 +289,7 @@ sem-prompts must load before sem-router and sem-url-capture."
     (require 'sem-planner)
     (require 'sem-daily-plan)
     (require 'sem-migrate)
+    (require 'sem-orgnote)
     (message "SEM: All modules loaded")))
 
 ;;; 9. Install *Messages* Redirection Hook

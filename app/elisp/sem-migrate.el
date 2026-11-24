@@ -46,9 +46,6 @@
   '(("morning-read" . "digest") ("archive" . "digest/archive"))
   "Root directories moved into the repository, as (SOURCE . TARGET).")
 
-(defconst sem-migrate-repo-ignored '("sem/")
-  "Entries ensured in the repository .gitignore.")
-
 (defun sem-migrate--log (format-string &rest args)
   "Log a migration message built from FORMAT-STRING and ARGS."
   (message "SEM: migrate: %s" (apply #'format format-string args)))
@@ -150,26 +147,6 @@ Existing monthly files are appended to.  The original is moved to
       (sem-migrate--log "journal split into %d monthly files" written)
       written)))
 
-(defun sem-migrate--ensure-gitignore (repo-dir)
-  "Ensure `sem-migrate-repo-ignored' entries are in REPO-DIR's .gitignore."
-  (when (file-directory-p repo-dir)
-    (let* ((file (expand-file-name ".gitignore" repo-dir))
-           (content (if (file-exists-p file)
-                        (with-temp-buffer (insert-file-contents file) (buffer-string))
-                      ""))
-           (missing (cl-remove-if
-                     (lambda (entry)
-                       (string-match-p (concat "^" (regexp-quote entry) "$") content))
-                     sem-migrate-repo-ignored)))
-      (when missing
-        (write-region (concat (if (or (string-empty-p content)
-                                      (string-suffix-p "\n" content))
-                                  ""
-                                "\n")
-                              "# daemon-managed read-only copies\n"
-                              (mapconcat #'identity missing "\n") "\n")
-                      nil file t 'silent)))))
-
 (defun sem-migrate-data-layout ()
   "Migrate a flat /data into the split tasks / repository layout.
 Idempotent and safe to call at every startup.  Returns the number of
@@ -202,8 +179,7 @@ moved or transformed entries; never signals."
                   (setq count (+ count (sem-migrate--move
                                         file
                                         (expand-file-name
-                                         name (expand-file-name "notes/" sem-migrate-repo-dir))))))))
-            (sem-migrate--ensure-gitignore sem-migrate-repo-dir)))
+                                         name (expand-file-name "notes/" sem-migrate-repo-dir))))))))))
         (sem-migrate--log "layout migration done (%d entries)" count)
         count)
     (error

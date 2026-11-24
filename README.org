@@ -115,6 +115,20 @@ tasks and settings; knowledge files live in the git repository.
   hosted.
 - Login is GitHub OAuth; the OAuth app callback URL is
   =https://ORGNOTE_DOMAIN/api/v1/auth/github/callback=.
+- Clients: the orgnote apps have no server field yet; set it in
+  =.orgnote/config.toml= of the notes folder:
+  #+begin_src toml
+  [network]
+  apiUrl = "https://ORGNOTE_DOMAIN/api/v1"
+  [synchronization]
+  type = "api"
+  #+end_src
+- Daemon sync: with =ORGNOTE_API_TOKEN= set (an API token created in the
+  app), the 5-minute cron cycle runs git pre-pull, refreshes read-only copies
+  of =tasks.org= / =rec-tasks.org= in =org-roam/sem/=, then =orgnote-cli sync=
+  of =/data/org-roam= (log: =logs/orgnote-cli.log=). New =*.sync-conflict-*=
+  files become TODOs in =errors.org=. =sem/= and =.orgnote/= are kept out of
+  git via =.git/info/exclude=.
 
 ** Self-hosted organice and CORS
 - Organice runs as a dedicated container image and is served through the existing

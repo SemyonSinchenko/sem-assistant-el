@@ -29,6 +29,9 @@ services:
       - SEM_WATCHDOG_PROBE_TIMEOUT_SEC=${SEM_WATCHDOG_PROBE_TIMEOUT_SEC:-45}
       - SEM_WATCHDOG_STARTUP_GRACE_SEC=${SEM_WATCHDOG_STARTUP_GRACE_SEC:-180}
       - OUTPUT_LANGUAGE=English
+      # orgnote sync of /data/org-roam (disabled while empty)
+      - ORGNOTE_API_TOKEN=${ORGNOTE_API_TOKEN:-}
+      - ORGNOTE_REMOTE_ADDRESS=${ORGNOTE_REMOTE_ADDRESS:-}
     depends_on:
       - webdav
     restart: unless-stopped

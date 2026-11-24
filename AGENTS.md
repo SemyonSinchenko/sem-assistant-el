@@ -81,6 +81,7 @@ app/elisp/              Source modules (load order matters — see init.el)
   sem-planner.el        Pass 2 scheduling of new tasks
   sem-daily-plan.el     Morning day plan (/data/tasks/daily-plan.org)
   sem-migrate.el        One-time migration to the /data/tasks + org-roam split
+  sem-orgnote.el        orgnote-cli sync of /data/org-roam (+ read-only task copies)
   sem-git-sync.el       Automated org-roam → GitHub sync
   tests/                ERT test suite
     sem-mock.el         Shared mock helpers (load first)
@@ -192,7 +193,7 @@ Use `sem-core-log-error` for failures (also writes to `errors.org`):
 ```
 
 Valid MODULE values: `core`, `router`, `rss`, `url-capture`, `security`, `llm`,
-`elfeed`, `purge`, `init`, `git-sync`, `planner`.
+`elfeed`, `purge`, `init`, `git-sync`, `planner`, `orgnote`.
 
 Valid STATUS values: `OK`, `RETRY`, `DLQ`, `SKIP`, `FAIL`.
 

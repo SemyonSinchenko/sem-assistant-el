@@ -5,8 +5,9 @@
 # Inbox processing - every 30 minutes
 */30 * * * *	root	emacsclient -s sem-server -e "(sem-core-process-inbox)"
 
-# Git pre-pull reconciliation - every 5 minutes
-*/5 * * * *	root	emacsclient -s sem-server -e "(sem-git-sync-org-roam-prepull)"
+# Git pre-pull reconciliation + orgnote sync - every 5 minutes
+# (orgnote part runs only when ORGNOTE_API_TOKEN is set)
+*/5 * * * *	root	emacsclient -s sem-server -e "(sem-orgnote-sync-cycle)"
 
 # Inbox purge - daily at 4:15 AM (only time inbox-mobile.org is written).
 # Offset from the */30 inbox run at 4:00 so the two jobs do not overlap.

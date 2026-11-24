@@ -15,6 +15,11 @@ RUN uv tool install -q "trafilatura>=2.0.0,<3.0.0" && uv cache clean -q
 # Install watchdog/runtime timezone dependencies
 RUN apk add --no-cache util-linux tzdata
 
+# orgnote-cli syncs /data/org-roam with the self-hosted orgnote server
+RUN apk add --no-cache nodejs npm \
+    && npm install -g --ignore-scripts --no-fund --no-audit orgnote-cli@0.64.0 \
+    && npm cache clean --force
+
 # Create app directory
 WORKDIR /app
 

@@ -345,6 +345,14 @@ Uses unwind-protect to ensure agent teardown runs even on failure."
                          "Starting org-roam sync"
                          nil)
 
+        ;; Do not commit while orgnote-cli is rewriting files in the repo;
+        ;; the next scheduled run picks the changes up.
+        (when (and (fboundp 'sem-orgnote-running-p) (sem-orgnote-running-p))
+          (sem-core-log "git-sync" "GIT-SYNC" "SKIP"
+                        "orgnote sync in progress; commit deferred"
+                        nil)
+          (cl-return-from sem-git-sync-org-roam nil))
+
         ;; Check if directory exists
         (unless (file-directory-p sem-git-sync-org-roam-dir)
           (sem-core-log "git-sync" "GIT-SYNC" "FAIL"

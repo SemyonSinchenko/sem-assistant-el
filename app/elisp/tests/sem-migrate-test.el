@@ -81,8 +81,7 @@ November two
       (should (file-exists-p (expand-file-name name root))))
     (dolist (name '("tasks.org" "links.org" "journal.org" "morning-read" "archive" "prompts"))
       (should-not (file-exists-p (expand-file-name name root))))
-    (should (string= (content "tasks/tasks.org") "content of tasks.org\n"))
-    (should (string-match-p "^sem/$" (content "org-roam/.gitignore")))))
+    (should (string= (content "tasks/tasks.org") "content of tasks.org\n"))))
 
 (ert-deftest sem-migrate-test-journal-split-by-month ()
   "Test the legacy journal becomes monthly files with flattened levels."
@@ -108,10 +107,7 @@ November two
       (put "tasks.org" "stale copy\n")
       (should (= (sem-migrate-data-layout) 0)))
     (should (string= (content "tasks/tasks.org") "content of tasks.org\n"))
-    (should (string= (content "tasks.org") "stale copy\n"))
-    (should (= 1 (with-temp-buffer
-                   (insert-file-contents (expand-file-name "org-roam/.gitignore" root))
-                   (how-many "^sem/$" (point-min) (point-max)))))))
+    (should (string= (content "tasks.org") "stale copy\n"))))
 
 (provide 'sem-migrate-test)
 ;;; sem-migrate-test.el ends here
