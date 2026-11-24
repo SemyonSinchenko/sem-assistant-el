@@ -95,6 +95,7 @@
                                         (regexp-quote (directory-file-name sem-orgnote-root))
                                         "\"$")
                                 content))
+        (should (string-match-p "\"digest/archive/\\*\\*\"" content))
         (should (= (file-modes file) #o600))))))
 
 (defun sem-orgnote-test--fake-cli (dir script)

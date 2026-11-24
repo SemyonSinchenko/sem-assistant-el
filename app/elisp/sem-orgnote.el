@@ -101,7 +101,9 @@ round trip through TLS and the public domain."
    "logPath = " (sem-orgnote--toml-string sem-orgnote-log-file) "\n"
    "backupDir = " (sem-orgnote--toml-string (directory-file-name sem-orgnote-backup-dir)) "\n"
    "backupCount = 3\n"
-   "ignorePatterns = [\"*.tmp\", \"org-roam.db*\"]\n"))
+   ;; The digest archive stays in git but is too large for the mobile
+   ;; client's one-file-at-a-time sync, so it is not published to orgnote.
+   "ignorePatterns = [\"*.tmp\", \"org-roam.db*\", \"digest/archive\", \"digest/archive/**\"]\n"))
 
 (defun sem-orgnote--write-config (token)
   "Write the orgnote-cli config for TOKEN, readable only by the daemon user."

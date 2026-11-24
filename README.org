@@ -127,7 +127,8 @@ tasks and settings; knowledge files live in the git repository.
   app), the 5-minute cron cycle runs git pre-pull, refreshes read-only copies
   of =tasks.org= / =rec-tasks.org= in =org-roam/sem/=, then =orgnote-cli sync=
   of =/data/org-roam= (log: =logs/orgnote-cli.log=). New =*.sync-conflict-*=
-  files become TODOs in =errors.org=. =sem/= and =.orgnote/= are kept out of
+  files become TODOs in =errors.org=. =digest/archive/= stays in git but is
+  not published to orgnote. =sem/= and =.orgnote/= are kept out of
   git via =.git/info/exclude=.
 
 ** Self-hosted organice and CORS
