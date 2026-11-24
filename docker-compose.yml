@@ -40,11 +40,14 @@ services:
       - ./data:/data:rw,z
       - ./webdav/apache/start-webdav.sh:/usr/local/bin/start-webdav.sh:ro,z
       - ./webdav/apache/httpd-webdav.conf.template:/usr/local/apache2/conf/extra/httpd-webdav.conf.template:ro,z
+      - ./webdav/apache/httpd-orgnote.conf.template:/usr/local/apache2/conf/extra/httpd-orgnote.conf.template:ro,z
       - /etc/letsencrypt:/certs:ro,z
     environment:
       - WEBDAV_DOMAIN=${WEBDAV_DOMAIN:-example.com}
       - ORGANICE_DOMAIN=${ORGANICE_DOMAIN:-organice.example.com}
       - ORGANICE_ORIGIN=${ORGANICE_ORIGIN:-https://organice.example.com}
+      # Optional: when set, Apache also serves the orgnote API on this domain.
+      - ORGNOTE_DOMAIN=${ORGNOTE_DOMAIN:-}
       - WEBDAV_USERNAME=${WEBDAV_USERNAME:-orgzly}
       - WEBDAV_PASSWORD=${WEBDAV_PASSWORD:-ChangeMeStrongPassword2026}
       - WEBDAV_RUNTIME_MODE=${WEBDAV_RUNTIME_MODE:-production}
@@ -77,6 +80,7 @@ services:
     environment:
       - WEBDAV_DOMAIN=${WEBDAV_DOMAIN:-}
       - ORGANICE_DOMAIN=${ORGANICE_DOMAIN:-}
+      - ORGNOTE_DOMAIN=${ORGNOTE_DOMAIN:-}
       - CERTBOT_EMAIL=${CERTBOT_EMAIL:-}
       - CERTBOT_STAGING=${CERTBOT_STAGING:-true}
       - CERTBOT_RENEW_INTERVAL=${CERTBOT_RENEW_INTERVAL:-12h}
@@ -120,6 +124,7 @@ services:
         }
         issue_cert "$${WEBDAV_DOMAIN}"
         issue_cert "$${ORGANICE_DOMAIN}"
+        if [ -n "$${ORGNOTE_DOMAIN}" ]; then issue_cert "$${ORGNOTE_DOMAIN}"; fi
         while true; do
           echo "[certbot] Running renewal check for all configured lineages."
           if certbot renew --standalone --non-interactive --preferred-challenges http; then
@@ -127,7 +132,7 @@ services:
           else
             echo "[certbot] ERROR: Renewal failed. Check DNS, firewall, and ACME reachability for $${WEBDAV_DOMAIN} and $${ORGANICE_DOMAIN}."
           fi
-          for domain in "$${WEBDAV_DOMAIN}" "$${ORGANICE_DOMAIN}"; do
+          for domain in "$${WEBDAV_DOMAIN}" "$${ORGANICE_DOMAIN}" $${ORGNOTE_DOMAIN}; do
             if grep -qs "acme-staging" "/etc/letsencrypt/renewal/$${domain}.conf"; then
               echo "[certbot] WARNING: lineage $${domain} uses the STAGING CA; browsers and clients will not trust it."
               echo "[certbot] WARNING: to switch, set CERTBOT_STAGING=false and run: certbot certonly --standalone --force-renewal --cert-name $${domain} -d $${domain}"
@@ -137,3 +142,94 @@ services:
           sleep "$${CERTBOT_RENEW_INTERVAL}"
         done
     restart: unless-stopped
+
+  # --- orgnote (self-hosted sync server for notes) -------------------------
+  # Enabled by the "orgnote" profile; set COMPOSE_PROFILES=orgnote in .env.
+  # Only the API is hosted: clients are the orgnote mobile/desktop apps and
+  # orgnote-cli, pointed at https://ORGNOTE_DOMAIN/api/v1.
+  orgnote-backend:
+    profiles:
+      - orgnote
+    build:
+      # Pinned upstream commit (release 0.68.12, 2026-11-15).
+      context: https://github.com/Artawower/orgnote.git#269ef405c08035e7b303b77ad4db4b0271d37876:orgnote-backend
+      # Upstream Dockerfile minus the subscription-client generation step: that
+      # step downloads a schema from the hosted subscription service, which a
+      # self-hosted server does not use. The generated client is committed.
+      dockerfile_inline: |
+        FROM golang:1.24-alpine
+        WORKDIR /workspace
+        ENV GO111MODULE=on
+        COPY go.mod go.sum entrypoint.sh ./
+        RUN go mod download && go mod verify
+        COPY app app
+        COPY migrations migrations
+        RUN go build -o orgnote app/main.go
+        RUN go install -tags 'mongodb' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.17.1
+        ENTRYPOINT ["./entrypoint.sh"]
+    container_name: sem-orgnote-backend
+    depends_on:
+      - orgnote-mongo
+      - orgnote-s3
+    volumes:
+      - orgnote-media:/workspace/media
+    environment:
+      - APP_ADDRESS=0.0.0.0:3000
+      - BACKEND_URL=https://${ORGNOTE_DOMAIN:-notes.example.com}/api/v1
+      - CLIENT_ADDRESS=https://${ORGNOTE_DOMAIN:-notes.example.com}
+      - MONGO_URL=orgnote-mongo
+      - MONGO_PORT=27017
+      - MONGO_USERNAME=orgnote
+      - MONGO_PASSWORD=${ORGNOTE_MONGO_PASSWORD:-}
+      - GITHUB_ID=${ORGNOTE_GITHUB_ID:-}
+      - GITHUB_SECRET=${ORGNOTE_GITHUB_SECRET:-}
+      - S3_ENDPOINT=orgnote-s3:8333
+      - S3_ACCESS_KEY=${ORGNOTE_S3_ACCESS_KEY:-}
+      - S3_SECRET_KEY=${ORGNOTE_S3_SECRET_KEY:-}
+      - S3_BUCKET=orgnote-files
+      - S3_USE_SSL=false
+      # Empty = self-hosted mode: no subscription check, quota below applies.
+      - ACCESS_CHECK_URL=
+      - SELF_HOSTED_SPACE_LIMIT_BYTES=${ORGNOTE_SPACE_LIMIT_BYTES:-2147483648}
+    restart: unless-stopped
+
+  orgnote-mongo:
+    profiles:
+      - orgnote
+    # MongoDB 5+ requires a CPU with AVX (check: grep -c avx /proc/cpuinfo).
+    image: docker.io/library/mongo:5.0.33
+    container_name: sem-orgnote-mongo
+    command: ["--auth", "--wiredTigerCacheSizeGB", "0.25"]
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=orgnote
+      - MONGO_INITDB_ROOT_PASSWORD=${ORGNOTE_MONGO_PASSWORD:-}
+    volumes:
+      - orgnote-mongo-data:/data/db
+    restart: unless-stopped
+
+  orgnote-s3:
+    profiles:
+      - orgnote
+    # S3-compatible object storage for note contents (MinIO no longer
+    # publishes container images).
+    image: docker.io/chrislusf/seaweedfs:4.55
+    container_name: sem-orgnote-s3
+    environment:
+      - S3_ACCESS_KEY=${ORGNOTE_S3_ACCESS_KEY:-}
+      - S3_SECRET_KEY=${ORGNOTE_S3_SECRET_KEY:-}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        printf '{"identities":[{"name":"orgnote","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}\n' \
+          "$${S3_ACCESS_KEY}" "$${S3_SECRET_KEY}" > /tmp/s3.json
+        exec weed server -dir=/data -s3 -s3.port=8333 -s3.config=/tmp/s3.json \
+          -master.volumeSizeLimitMB=1024 -volume.max=0
+    volumes:
+      - orgnote-s3-data:/data
+    restart: unless-stopped
+
+volumes:
+  orgnote-media:
+  orgnote-mongo-data:
+  orgnote-s3-data:

@@ -104,6 +104,18 @@ tasks and settings; knowledge files live in the git repository.
 - Mobile sync should target the correct path scope (root for inbox/tasks/rules,
   and org-roam subtree as needed).
 
+** Self-hosted orgnote server
+- Optional sync server for notes (graph, notes, journal, digests) used by the
+  orgnote apps and =orgnote-cli=. Enabled with =COMPOSE_PROFILES=orgnote= and
+  the =ORGNOTE_*= variables in =.env=.
+- Services: =orgnote-backend= (built from a pinned upstream commit),
+  =orgnote-mongo= (MongoDB 5, needs AVX), =orgnote-s3= (SeaweedFS as S3).
+- Apache serves only the API on =ORGNOTE_DOMAIN=: clients use
+  =https://ORGNOTE_DOMAIN/api/v1= as the server address. No web client is
+  hosted.
+- Login is GitHub OAuth; the OAuth app callback URL is
+  =https://ORGNOTE_DOMAIN/api/v1/auth/github/callback=.
+
 ** Self-hosted organice and CORS
 - Organice runs as a dedicated container image and is served through the existing
   HTTPS WebDAV container as reverse proxy, routed by host header to

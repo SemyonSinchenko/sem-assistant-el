@@ -1,0 +1,19 @@
+<VirtualHost *:6065>
+  ServerName @@ORGNOTE_DOMAIN@@
+  SSLEngine on
+  SSLCertificateFile @@ORGNOTE_CERT_FILE@@
+  SSLCertificateKeyFile @@ORGNOTE_KEY_FILE@@
+
+  # orgnote API: REST under /api/v1 and the /api/ws/events websocket. The
+  # /api prefix is stripped, matching upstream's reverse-proxy layout, so
+  # clients use https://@@ORGNOTE_DOMAIN@@/api/v1 as the server address.
+  ProxyPreserveHost On
+  ProxyPass /api/ http://orgnote-backend:3000/ upgrade=websocket
+  ProxyPassReverse /api/ http://orgnote-backend:3000/
+
+  # Note uploads (backend limit is 50 MB per file).
+  LimitRequestBody 104857600
+
+  ErrorLog /proc/self/fd/2
+  CustomLog /proc/self/fd/1 combined
+</VirtualHost>

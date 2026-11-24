@@ -97,6 +97,23 @@ if ! openssl pkey -in "$ORGANICE_KEY_FILE" -noout >/dev/null 2>&1; then
   exit 1
 fi
 
+ORGNOTE_DOMAIN="${ORGNOTE_DOMAIN:-}"
+ORGNOTE_CERT_FILE=""
+if [ -n "$ORGNOTE_DOMAIN" ]; then
+  ORGNOTE_CERT_FILE="/certs/live/${ORGNOTE_DOMAIN}/fullchain.pem"
+  ORGNOTE_KEY_FILE="/certs/live/${ORGNOTE_DOMAIN}/privkey.pem"
+  if [ ! -r "$ORGNOTE_CERT_FILE" ] || [ ! -r "$ORGNOTE_KEY_FILE" ]; then
+    echo "[webdav] ERROR: Missing TLS certificate files for ORGNOTE_DOMAIN=${ORGNOTE_DOMAIN}."
+    echo "[webdav] Expected: $ORGNOTE_CERT_FILE and $ORGNOTE_KEY_FILE"
+    echo "[webdav] Issue it first (certbot profile) or unset ORGNOTE_DOMAIN."
+    exit 1
+  fi
+  if ! openssl x509 -in "$ORGNOTE_CERT_FILE" -noout >/dev/null 2>&1; then
+    echo "[webdav] ERROR: Invalid certificate file for ORGNOTE_DOMAIN=${ORGNOTE_DOMAIN}: $ORGNOTE_CERT_FILE"
+    exit 1
+  fi
+fi
+
 if ! command -v htpasswd >/dev/null 2>&1; then
   echo "[webdav] ERROR: htpasswd binary not found in container image."
   exit 1
@@ -120,6 +137,16 @@ fi
 
 sed "s|@@WEBDAV_DOMAIN@@|$WEBDAV_DOMAIN|g; s|@@ORGANICE_DOMAIN@@|$ORGANICE_DOMAIN|g; s|@@ORGANICE_ORIGIN@@|$ORGANICE_ORIGIN|g; s|@@WEBDAV_CERT_FILE@@|$CERT_FILE|g; s|@@WEBDAV_KEY_FILE@@|$KEY_FILE|g; s|@@ORGANICE_CERT_FILE@@|$ORGANICE_CERT_FILE|g; s|@@ORGANICE_KEY_FILE@@|$ORGANICE_KEY_FILE|g" "$CONF_TEMPLATE" > "$CONF_OUTPUT"
 
+ORGNOTE_TEMPLATE="/usr/local/apache2/conf/extra/httpd-orgnote.conf.template"
+ORGNOTE_OUTPUT="/usr/local/apache2/conf/extra/httpd-orgnote.conf"
+if [ -n "$ORGNOTE_DOMAIN" ]; then
+  sed "s|@@ORGNOTE_DOMAIN@@|$ORGNOTE_DOMAIN|g; s|@@ORGNOTE_CERT_FILE@@|$ORGNOTE_CERT_FILE|g; s|@@ORGNOTE_KEY_FILE@@|$ORGNOTE_KEY_FILE|g" "$ORGNOTE_TEMPLATE" > "$ORGNOTE_OUTPUT"
+  echo "[webdav] INFO: orgnote API proxy enabled for ${ORGNOTE_DOMAIN}."
+else
+  # Keep the Include valid while orgnote is disabled.
+  : > "$ORGNOTE_OUTPUT"
+fi
+
 httpd_conf="/usr/local/apache2/conf/httpd.conf"
 sed -i 's/^#\(LoadModule ssl_module modules\/mod_ssl.so\)$/\1/' "$httpd_conf"
 sed -i 's/^#\(LoadModule socache_shmcb_module modules\/mod_socache_shmcb.so\)$/\1/' "$httpd_conf"
@@ -136,6 +163,9 @@ sed -i "s/^Group .*/Group #${WEBDAV_GID}/" "$httpd_conf"
 
 if ! grep -q '^Include conf/extra/httpd-webdav.conf$' "$httpd_conf"; then
   printf '\nInclude conf/extra/httpd-webdav.conf\n' >> "$httpd_conf"
+fi
+if ! grep -q '^Include conf/extra/httpd-orgnote.conf$' "$httpd_conf"; then
+  printf 'Include conf/extra/httpd-orgnote.conf\n' >> "$httpd_conf"
 fi
 
 # --- Certificate auto-reload watcher -----------------------------------------
@@ -161,12 +191,17 @@ fi
   first_poll="true"
   prev_cert_fp=""
   prev_organice_fp=""
+  prev_orgnote_fp=""
 
   while true; do
     sleep "$WEBDAV_CERT_RELOAD_INTERVAL"
 
     cert_fp="$(openssl x509 -in "$CERT_FILE" -noout -fingerprint -sha256 2>/dev/null)"
     organice_fp="$(openssl x509 -in "$ORGANICE_CERT_FILE" -noout -fingerprint -sha256 2>/dev/null)"
+    orgnote_fp=""
+    if [ -n "$ORGNOTE_CERT_FILE" ]; then
+      orgnote_fp="$(openssl x509 -in "$ORGNOTE_CERT_FILE" -noout -fingerprint -sha256 2>/dev/null)"
+    fi
 
     # Transient openssl failure: skip this poll, retry next interval.
     if [ -z "$cert_fp" ] || [ -z "$organice_fp" ]; then
@@ -179,17 +214,19 @@ fi
     if [ "$first_poll" = "true" ]; then
       prev_cert_fp="$cert_fp"
       prev_organice_fp="$organice_fp"
+      prev_orgnote_fp="$orgnote_fp"
       first_poll="false"
       echo "[webdav] INFO: certificate watcher armed (interval=${WEBDAV_CERT_RELOAD_INTERVAL}s)."
       continue
     fi
 
     # Reload only when a monitored fingerprint changed.
-    if [ "$cert_fp" != "$prev_cert_fp" ] || [ "$organice_fp" != "$prev_organice_fp" ]; then
+    if [ "$cert_fp" != "$prev_cert_fp" ] || [ "$organice_fp" != "$prev_organice_fp" ] || [ "$orgnote_fp" != "$prev_orgnote_fp" ]; then
       echo "[webdav] INFO: certificate change detected; reloading httpd."
       if httpd -k graceful; then
         prev_cert_fp="$cert_fp"
         prev_organice_fp="$organice_fp"
+        prev_orgnote_fp="$orgnote_fp"
         echo "[webdav] INFO: httpd graceful reload complete."
       else
         # Non-fatal: logged and retried on the next poll.
