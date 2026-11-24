@@ -1,6 +1,7 @@
 # Pinned Emacs release; the previous master-* tag pulled a new Emacs snapshot
-# (and GnuTLS) on every rebuild. Keep in sync with the local test Emacs.
-FROM silex/emacs:30.2-alpine-ci-eask
+# (and GnuTLS) on every rebuild. 31.x is required: current MELPA transient
+# (pulled in by gptel/org-roam) conflicts with the transient bundled in 30.x.
+FROM silex/emacs:31.1-alpine-ci-eask
 
 # Cron stuff
 RUN mkfifo -m 0666 /var/log/cron.log
