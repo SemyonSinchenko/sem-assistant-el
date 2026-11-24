@@ -13,7 +13,7 @@ services:
       - LLM_PROVIDER=${LLM_PROVIDER:-deepseek}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
       - LLM_API_KEY=${LLM_API_KEY:-}
-      - LLM_MODEL=${LLM_MODEL:-deepseek-v4-pro}
+      - LLM_MODEL=${LLM_MODEL:-deepseek-flash}
       - LLM_WEAK_MODEL=${LLM_WEAK_MODEL:-deepseek-flash}
       # Thinking per tier: none (disabled) | low | high | max.
       - LLM_REASONING_EFFORT=${LLM_REASONING_EFFORT:-none}
