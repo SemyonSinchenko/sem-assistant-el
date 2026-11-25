@@ -29,13 +29,23 @@ pipeline.
 - Unknown headline types are skipped and logged.
 
 ** Daily plan
-- Every day at 07:00 the daemon writes =/data/tasks/daily-plan.org=.
-- It reads open tasks from =/data/tasks/tasks.org= (overdue, scheduled today,
-  deadlines within 7 days, unscheduled backlog) plus =rules.org= and asks
-  the LLM to pick today's tasks with time blocks, a reason and a first step.
-- Overdue tasks that do not fit get a "reschedule to <date>" or "drop"
-  suggestion. =tasks.org= itself is never modified by the daily plan.
-- If the LLM call fails, the file still lists the tasks without suggestions.
+- Every day at 07:00 the daemon schedules the day directly in
+  =/data/tasks/tasks.org=; there is no separate plan file.
+- Input: overdue tasks, tasks scheduled today without a time, deadlines within
+  7 days and the unscheduled backlog, plus =rules.org=.  Timed tasks of today
+  and today's occurrences of recurring tasks from =rec-tasks.org= are busy
+  slots and are never modified.
+- Every overdue task gets a time block today, a new date, or (when it looks
+  obsolete) loses its SCHEDULED and gets the =:drop_suggested:= tag.  Free time
+  is then filled from deadlines and backlog.  DEADLINE timestamps are never
+  changed; each changed task gets a =:SEM_DAILY_PLAN: <date> <action>= property.
+- The LLM only returns =PLAN/DEFER/DROP= lines; the daemon validates them (no
+  overlaps, nothing in the past) and edits only planning lines.
+- Write safety: the new content goes to a temp file, then =tasks.org= is
+  re-hashed; it is replaced only if unchanged since it was read.  Otherwise
+  the run restarts from fresh content (new LLM call, up to 3 attempts).  The
+  previous version is kept in =/data/.tasks-backups/= for 14 days.
+- If the LLM call fails, =tasks.org= is left untouched.
 - Manual trigger:
   #+begin_src sh
   docker compose exec emacs emacsclient -s sem-server -e "(sem-daily-plan-generate)"
@@ -73,7 +83,7 @@ tasks and settings; knowledge files live in the git repository.
 
 #+begin_example
 /data/tasks/      WebDAV root: inbox-mobile.org, tasks.org, rec-tasks.org,
-                  daily-plan.org, rules.org, feeds.org, prompts/, errors.org
+                  rules.org, feeds.org, prompts/, errors.org
 /data/org-roam/   git repository: org-files/ (org-roam notes), notes/,
                   journal/YYYY-MM.org, digest/ (+ digest/archive/YYYY-MM/)
 /data/            daemon internals: sem-log.org, elfeed/, cursor files
