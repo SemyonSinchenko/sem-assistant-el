@@ -4,7 +4,6 @@ import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
 import timeGridPlugin from '@fullcalendar/timegrid';
-import ruLocale from '@fullcalendar/core/locales/ru';
 import type { DatesSetArg, EventClickArg, EventContentArg, EventDropArg } from '@fullcalendar/core';
 import type { EventResizeDoneArg } from '@fullcalendar/interaction';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -60,7 +59,7 @@ export function CalendarView({ view, date }: { view: CalView | null; date: strin
 
   const events = useMemo(() => {
     if (!range) return [];
-    return buildEvents(loaded, filter, range.from, range.to, (h) => plainTitle(h.title) || '(без названия)').map((e) => ({
+    return buildEvents(loaded, filter, range.from, range.to, (h) => plainTitle(h.title) || '(untitled)').map((e) => ({
       id: e.id,
       title: e.title,
       start: e.start,
@@ -109,7 +108,7 @@ export function CalendarView({ view, date }: { view: CalView | null; date: strin
     const target = { path, id: h.id, line: h.line, lineText: c.org.lines[h.line], sectionLines: c.org.lines.slice(h.line, h.bodyEnd) };
     const r = await saveHeadline(client, target, { scheduled: next }, c.org.todo);
     if (!r.ok) {
-      toast({ text: r.conflict ? 'Запись изменилась на сервере — обновите календарь' : 'Не сохранено: ' + r.error });
+      toast({ text: r.conflict ? 'The entry changed on the server — refresh the calendar' : 'Not saved: ' + r.error });
       if (r.conflict) void useStore.getState().loadFile(path, true);
       return false;
     }
@@ -117,7 +116,7 @@ export function CalendarView({ view, date }: { view: CalView | null; date: strin
     toast({
       text: `SCHEDULED: ${formatTimestamp(old)} → ${formatTimestamp(next)}`,
       ttl: 6000,
-      action: undoable ? { label: 'Отменить', run: () => void reschedule(path, line, () => old, false) } : undefined,
+      action: undoable ? { label: 'Undo', run: () => void reschedule(path, line, () => old, false) } : undefined,
     });
     return true;
   };
@@ -162,13 +161,13 @@ export function CalendarView({ view, date }: { view: CalView | null; date: strin
       <div className="cal">
         <div className="ctb">
           <button className="btn" aria-expanded={fopen} onClick={() => setFopen(!fopen)}>
-            Фильтр {filterCount(filter, defaultFilter(config)) > 0 && <span className="badge">{filterCount(filter, defaultFilter(config))}</span>}
+            Filter {filterCount(filter, defaultFilter(config)) > 0 && <span className="badge">{filterCount(filter, defaultFilter(config))}</span>}
           </button>
-          <button className="btn sm" onClick={() => void loadAll(true)} aria-label="Обновить">
+          <button className="btn sm" onClick={() => void loadAll(true)} aria-label="Refresh">
             <Icon name="refresh" size={15} />
           </button>
           <span className="fq">
-            Запрос: <code>{filterQuery(filter)}</code>
+            Query: <code>{filterQuery(filter)}</code>
           </span>
         </div>
         {fopen && (
@@ -195,9 +194,8 @@ export function CalendarView({ view, date }: { view: CalView | null; date: strin
             initialView={view ?? (mobile ? config.calendar.mobileDefaultView : config.calendar.defaultView)}
             initialDate={date ?? undefined}
             headerToolbar={{ left: 'today prev,next', center: 'title', right: 'timeGridDay,timeGridWeek,dayGridMonth' }}
-            buttonText={{ today: 'Сегодня', day: 'День', week: 'Неделя', month: 'Месяц' }}
-            locales={[ruLocale]}
-            locale="ru"
+            buttonText={{ today: 'Today', day: 'Day', week: 'Week', month: 'Month' }}
+            dayHeaderFormat={{ weekday: 'short', day: 'numeric' }}
             firstDay={config.calendar.firstDay}
             slotMinTime={config.calendar.slotMinTime}
             slotMaxTime={config.calendar.slotMaxTime}
@@ -206,7 +204,7 @@ export function CalendarView({ view, date }: { view: CalView | null; date: strin
             navLinks
             dayMaxEvents
             moreLinkClick="day"
-            allDayText="весь день"
+            allDayText="all-day"
             slotLabelFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
             eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
             height="100%"
@@ -223,7 +221,7 @@ export function CalendarView({ view, date }: { view: CalView | null; date: strin
               const e = arg.event.extendedProps as CalEvent;
               if (e.kind === 'warning') return null;
               return (
-                <div className="fc-ev" title={e.draggable ? undefined : e.kind === 'deadline' ? 'DEADLINE — двигается только в редакторе' : e.repeating ? 'Повторяющаяся — двигается только в редакторе' : undefined}>
+                <div className="fc-ev" title={e.draggable ? undefined : e.kind === 'deadline' ? 'DEADLINE — change it in the editor' : e.repeating ? 'Repeating — move it in the editor' : undefined}>
                   {e.kind === 'deadline' && <i className="dl">DL</i>}
                   {arg.timeText && <span className="tm">{arg.timeText}</span>}
                   {e.repeating && '↻ '}
@@ -276,7 +274,7 @@ function FilterPanel(props: {
   return (
     <div className="fp">
       <div className="fg">
-        <div className="fl">Пресеты</div>
+        <div className="fl">Presets</div>
         <div className="chips">
           {props.presets.map((p) => (
             <button key={p.name} className="chip" onClick={() => props.applyPreset(p)}>
@@ -284,21 +282,21 @@ function FilterPanel(props: {
             </button>
           ))}
           <span className="psave">
-            <input value={pname} onChange={(e) => setPname(e.target.value)} placeholder="имя пресета" />
+            <input value={pname} onChange={(e) => setPname(e.target.value)} placeholder="preset name" />
             <button className="chip" disabled={!pname.trim()} onClick={() => (props.savePreset(pname.trim()), setPname(''))}>
-              Сохранить как пресет
+              Save as preset
             </button>
           </span>
         </div>
       </div>
       <div className="fg">
-        <div className="fl">Файлы</div>
+        <div className="fl">Files</div>
         <div className="chips">
           <button className="chip" onClick={() => setFilter({ ...F, files: null })}>
-            все
+            all
           </button>
           <button className="chip" onClick={() => setFilter({ ...F, files: [] })}>
-            ни одного
+            none
           </button>
           {files.map((f) => (
             <label className="chk" key={f}>
@@ -310,22 +308,22 @@ function FilterPanel(props: {
         </div>
       </div>
       <div className="fg">
-        <div className="fl">Теги</div>
+        <div className="fl">Tags</div>
         <div className="chips">
           {tags.map((t) => {
             const s = F.include.includes(t) ? 'inc' : F.exclude.includes(t) ? 'exc' : '';
             return (
-              <button key={t} className={'tagf ' + s} onClick={() => cycleTag(t)} title="клик: только с тегом → скрыть → выкл">
+              <button key={t} className={'tagf ' + s} onClick={() => cycleTag(t)} title="click: only with tag → hide → off">
                 {s === 'inc' ? '+' : s === 'exc' ? '−' : ''}
                 {t}
               </button>
             );
           })}
-          {!tags.length && <span className="mut">нет тегов</span>}
+          {!tags.length && <span className="mut">no tags</span>}
         </div>
       </div>
       <div className="fg">
-        <div className="fl">Состояния</div>
+        <div className="fl">States</div>
         <div className="chips">
           {keywords.map((k) => (
             <label className="chk" key={k}>
@@ -336,20 +334,20 @@ function FilterPanel(props: {
         </div>
       </div>
       <div className="fg">
-        <div className="fl">Показать</div>
+        <div className="fl">Show</div>
         <div className="chips">
           {opt('showDone', 'DONE')}
           {opt('showDeadline', 'DEADLINE')}
-          {opt('showBody', 'таймстемпы из тела')}
-          {opt('showUntimed', 'записи без времени')}
+          {opt('showBody', 'body timestamps')}
+          {opt('showUntimed', 'untimed entries')}
         </div>
       </div>
       <div className="fq">
-        Запрос: <code>{filterQuery(F)}</code>
+        Query: <code>{filterQuery(F)}</code>
         <button className="chip sm" onClick={() => navigator.clipboard?.writeText(filterQuery(F))}>
-          копировать
+          copy
         </button>
-        · фильтр запоминается в этом браузере
+        · the filter is remembered in this browser
       </div>
     </div>
   );
@@ -371,8 +369,8 @@ function Preview({ sel, h, onClose }: { sel: Sel; h: Headline; onClose: () => vo
     <aside className="prev">
       <div className="ph">
         <span className="dot" style={{ ['--c' as string]: fileColor(config, sel.path) }} />
-        {sel.path} <span className="ro">только чтение</span>
-        <button className="ib" onClick={onClose} aria-label="Закрыть">
+        {sel.path} <span className="ro">read-only</span>
+        <button className="ib" onClick={onClose} aria-label="Close">
           <Icon name="close" size={16} />
         </button>
       </div>
@@ -388,11 +386,11 @@ function Preview({ sel, h, onClose }: { sel: Sel; h: Headline; onClose: () => vo
         <Tags h={h} />
       </div>
       <PlanningChips h={h} file={org} />
-      {body.trim() ? <OrgBody text={body} /> : <p className="more">Без текста</p>}
+      {body.trim() ? <OrgBody text={body} /> : <p className="more">No text</p>}
       <div className="pa">
         {!ro && (
           <button className="btn pri" onClick={() => navigate({ view: 'edit', path: sel.path, line: h.line })}>
-            Править
+            Edit
           </button>
         )}
         <button
@@ -402,11 +400,11 @@ function Preview({ sel, h, onClose }: { sel: Sel; h: Headline; onClose: () => vo
             navigate({ view: 'files', path: sel.path });
           }}
         >
-          Открыть в файле
+          Open in file
         </button>
       </div>
       <details>
-        <summary>Org-исходник</summary>
+        <summary>Org source</summary>
         <pre>{sectionSource(org, h)}</pre>
       </details>
     </aside>

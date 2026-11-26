@@ -3,9 +3,9 @@
     "path": "inbox-mobile.org"
   },
   "templates": [
-    { "id": "link",    "label": "Ссылка", "tag": "link",    "title": "firstLine", "icon": "link",  "placeholder": "Вставьте URL (можно с комментарием на следующих строках)" },
-    { "id": "task",    "label": "Задача", "tag": "task",    "title": "firstLine", "icon": "check", "placeholder": "Например: позвонить бухгалтеру завтра !" },
-    { "id": "journal", "label": "Журнал", "tag": "journal", "title": "timestamp", "icon": "book",  "placeholder": "Что произошло?" }
+    { "id": "link",    "label": "Link", "tag": "link",    "title": "firstLine", "icon": "link",  "placeholder": "Paste a URL (a comment may follow on the next lines)" },
+    { "id": "task",    "label": "Task", "tag": "task",    "title": "firstLine", "icon": "check", "placeholder": "e.g. call the accountant tomorrow !" },
+    { "id": "journal", "label": "Journal", "tag": "journal", "title": "timestamp", "icon": "book",  "placeholder": "What happened?" }
   ],
   "todoKeywords": { "active": ["TODO", "NEXT", "WAITING"], "done": ["DONE", "CANCELLED"] },
   "readOnly": ["inbox-mobile.org", "errors.org", "daily-plan.org"],
@@ -26,7 +26,7 @@
     "noDragFiles": []
   },
   "filterPresets": [
-    { "name": "Всё" },
-    { "name": "Задачи", "files": ["tasks.org", "rec-tasks.org", "errors.org"] }
+    { "name": "All" },
+    { "name": "Tasks", "files": ["tasks.org", "rec-tasks.org", "errors.org"] }
   ]
 }

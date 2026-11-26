@@ -10,7 +10,7 @@ export default defineConfig({
   use: {
     baseURL: 'https://localhost:16065/ui/',
     ignoreHTTPSErrors: true,
-    locale: 'ru-RU',
+    locale: 'en-GB',
     timezoneId: 'Europe/Berlin',
   },
   globalSetup: './e2e/global-setup.ts',

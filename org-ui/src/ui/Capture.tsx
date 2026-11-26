@@ -27,7 +27,7 @@ export function Capture({ templateId, initialText }: { templateId: string; initi
 
   const result = useMemo(() => (tpl ? buildCapture(tpl, text, now) : { entry: null, escaped: false }), [tpl, text, now]);
 
-  if (!tpl) return <div className="page empty">Шаблон «{templateId}» не найден в config.json</div>;
+  if (!tpl) return <div className="page empty">Template "{templateId}» not found in config.json</div>;
 
   const back = () => {
     const prev = lastRoute && lastRoute.view !== 'new' && lastRoute.view !== 'edit' ? lastRoute : null;
@@ -41,8 +41,8 @@ export function Capture({ templateId, initialText }: { templateId: string; initi
     setBusy(true);
     const res = await capture(r.entry);
     setBusy(false);
-    if (res === 'sent') toast({ text: 'Добавлено в ' + config.inbox.path });
-    else toast({ text: 'Сохранено локально, отправим позже', detail: 'outbox' });
+    if (res === 'sent') toast({ text: 'Added to ' + config.inbox.path });
+    else toast({ text: 'Saved locally, will send later', detail: 'outbox' });
     const prev = lastRoute && lastRoute.view !== 'new' && lastRoute.view !== 'edit' ? lastRoute : null;
     if (!prev || prev.view === 'files') navigate({ view: 'files', path: config.inbox.path });
     else navigate(prev);
@@ -52,19 +52,19 @@ export function Capture({ templateId, initialText }: { templateId: string; initi
     <div className="page">
       <div className="eh">
         <button className="btn" onClick={back}>
-          ← Назад
+          ← Back
         </button>
-        <h1>Новая: {tpl.label}</h1>
+        <h1>New: {tpl.label}</h1>
         <span className="tg ro">:{tpl.tag}:</span>
       </div>
       <div className="target">
-        Добавится в конец <b>{config.inbox.path}</b>
-        {tpl.title === 'timestamp' && ' · заголовок — дата и время, весь текст — в тело'}
+        Will be appended to the end of <b>{config.inbox.path}</b>
+        {tpl.title === 'timestamp' && ' · headline is the date and time, all text goes to the body'}
       </div>
       <div className="eg">
         <div className="form">
           <label>
-            Текст
+            Text
             <textarea
               ref={ta}
               autoFocus
@@ -79,27 +79,27 @@ export function Capture({ templateId, initialText }: { templateId: string; initi
               }}
             />
           </label>
-          {result.escaped && <div className="hint">Строки, начинающиеся с «* », сдвинуты на пробел, чтобы не стать заголовками.</div>}
+          {result.escaped && <div className="hint">Lines starting with "* " are indented by one space so they don't become headlines.</div>}
           <div className="acts">
             <button className="btn pri" disabled={!result.entry || busy} onClick={() => void submit()}>
-              {busy ? 'Отправляю…' : 'Добавить'}
+              {busy ? 'Sending…' : 'Add'}
             </button>
             <button className="btn" onClick={back}>
-              Отмена
+              Cancel
             </button>
             <span className="meta kbd">Ctrl/⌘+Enter</span>
           </div>
         </div>
         <aside className="src">
           <div className="sh">
-            Что уйдёт в файл
+            Goes to the file
             <button
               className="btn sm"
               disabled={!result.entry}
               onClick={() =>
                 navigator.clipboard?.writeText(result.entry ?? '').then(
-                  () => toast({ text: 'Скопировано' }),
-                  () => toast({ text: 'Буфер обмена недоступен' }),
+                  () => toast({ text: 'Copied' }),
+                  () => toast({ text: 'Clipboard unavailable' }),
                 )
               }
             >

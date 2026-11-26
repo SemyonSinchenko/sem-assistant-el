@@ -3,8 +3,8 @@
 import type { Headline, OrgFile } from '../org/parse';
 import { dateFromYmd, repeaterString, type Timestamp } from '../org/timestamp';
 
-const DOW_RU = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
-const MON_RU = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 function today(): Date {
   const d = new Date();
@@ -16,12 +16,12 @@ export function daysFromToday(date: string): number {
   return Math.round((dateFromYmd(date).getTime() - today().getTime()) / 864e5);
 }
 
-/** Human-readable date like «сегодня 14:00–16:00» or «пт 28 ноя». */
+/** Human-readable date like "today 14:00–16:00" or "Fri 28 Nov". */
 export function humanTs(ts: Timestamp): string {
   const n = daysFromToday(ts.date);
   const d = dateFromYmd(ts.date);
   let s =
-    n === 0 ? 'сегодня' : n === 1 ? 'завтра' : n === -1 ? 'вчера' : `${DOW_RU[d.getDay()]} ${d.getDate()} ${MON_RU[d.getMonth()]}`;
+    n === 0 ? 'today' : n === 1 ? 'tomorrow' : n === -1 ? 'yesterday' : `${DOW[d.getDay()]} ${d.getDate()} ${MON[d.getMonth()]}`;
   if (d.getFullYear() !== new Date().getFullYear()) s += ' ' + d.getFullYear();
   if (ts.start) s += ' ' + ts.start + (ts.end ? '–' + ts.end : '');
   return s;
@@ -48,7 +48,7 @@ export function Tags({ h }: { h: Headline }) {
         </span>
       ))}
       {h.inheritedTags.map((t) => (
-        <span key={'i' + t} className="tag inh" title="унаследован">
+        <span key={'i' + t} className="tag inh" title="inherited">
           {t}
         </span>
       ))}

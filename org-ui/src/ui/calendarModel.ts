@@ -56,7 +56,7 @@ export function filterQuery(f: Filter): string {
   if (!f.showDeadline) p.push('-deadline');
   if (f.showBody) p.push('+body');
   if (!f.showUntimed) p.push('-untimed');
-  return p.join(' ') || 'всё';
+  return p.join(' ') || 'all';
 }
 
 export function passes(f: Filter, path: string, org: OrgFile, h: Headline): boolean {

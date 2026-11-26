@@ -34,7 +34,7 @@ export async function appendToFile(
       return { ok: false, retryable: e instanceof DavError && e.status === 401, error: (e as Error).message };
     }
   }
-  return { ok: false, retryable: true, error: 'Файл постоянно меняется (412), попробуем позже' };
+  return { ok: false, retryable: true, error: 'The file keeps changing (412), will retry later' };
 }
 
 export interface EditTarget {
@@ -75,7 +75,7 @@ export async function saveHeadline(
     } catch (e) {
       return { ok: false, conflict: false, error: (e as Error).message };
     }
-    if (!cur) return { ok: false, conflict: false, error: 'Файл не найден на сервере' };
+    if (!cur) return { ok: false, conflict: false, error: 'File not found on the server' };
     const fresh = parseOrg(cur.text, todo);
     const h = relocateHeadline(fresh, target);
     if (!h) return { ok: false, conflict: true, serverSection: null };

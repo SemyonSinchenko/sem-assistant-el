@@ -14,10 +14,10 @@ export function FileList() {
   const { files, cache, config, route, refreshList, setDrawer, filesError } = useStore();
   const current = route.view === 'files' ? route.path ?? config.inbox.path : null;
   return (
-    <nav className="drawer" aria-label="Файлы">
+    <nav className="drawer" aria-label="Files">
       <div className="dh">
-        <span>Файлы</span>
-        <button className="ib sm" onClick={() => void refreshList()} aria-label="Обновить список">
+        <span>Files</span>
+        <button className="ib sm" onClick={() => void refreshList()} aria-label="Refresh list">
           <Icon name="refresh" size={16} />
         </button>
       </div>
@@ -35,7 +35,7 @@ export function FileList() {
           {cache[f] && <span className="n">{cache[f].org.headlines.length}</span>}
         </button>
       ))}
-      {!files.length && <div className="dnote">{filesError ? 'Ошибка: ' + filesError : 'Загрузка…'}</div>}
+      {!files.length && <div className="dnote">{filesError ? 'Error: ' + filesError : 'Loading…'}</div>}
     </nav>
   );
 }
@@ -90,24 +90,24 @@ export function FileView({ path }: { path: string }) {
         <div>
           <h1>{path}</h1>
           <div className="meta">
-            {org ? `${org.headlines.length} заголовков` : loading[path] ? 'Загрузка…' : ''}
-            {ro && ' · только чтение'}
+            {org ? `${org.headlines.length} headlines` : loading[path] ? 'Loading…' : ''}
+            {ro && ' · read-only'}
             {errors[path] && <span className="errt"> · {errors[path]}</span>}
           </div>
         </div>
         <div className="fa">
           <button className="btn sm" onClick={() => org && persistFold(new Set(org.headlines.filter((h) => h.subtreeEnd > h.bodyEnd).map((h) => h.line)))}>
-            Свернуть всё
+            Collapse all
           </button>
           <button className="btn sm" onClick={() => persistFold(new Set())}>
-            Развернуть всё
+            Expand all
           </button>
-          <button className="btn sm" onClick={() => void loadFile(path, true)} aria-label="Обновить">
+          <button className="btn sm" onClick={() => void loadFile(path, true)} aria-label="Refresh">
             <Icon name="refresh" size={15} />
           </button>
         </div>
       </div>
-      {isInbox && <div className="hint">Сырые записи. Обрабатываются автоматически каждые ~30 мин.</div>}
+      {isInbox && <div className="hint">Raw entries, processed automatically every ~30 min.</div>}
       {org &&
         rows.map((h) => (
           <HeadlineRow
@@ -133,7 +133,7 @@ export function FileView({ path }: { path: string }) {
             }}
           />
         ))}
-      {org && !org.headlines.length && <div className="empty">Заголовков нет</div>}
+      {org && !org.headlines.length && <div className="empty">No headlines</div>}
     </div>
   );
 }
@@ -156,7 +156,7 @@ function HeadlineRow(props: {
   return (
     <div className={`hl${h.level === 1 ? ' l1' : ''}${fresh ? ' new' : ''}`} id={`hl-${h.line}`} style={{ ['--lv' as string]: h.level - 1 }}>
       {kids ? (
-        <button className="caret" onClick={props.onFold} aria-label={folded ? 'Развернуть ветку' : 'Свернуть ветку'}>
+        <button className="caret" onClick={props.onFold} aria-label={folded ? 'Expand branch' : 'Collapse branch'}>
           {folded ? '▸' : '▾'}
         </button>
       ) : (
@@ -168,7 +168,7 @@ function HeadlineRow(props: {
         <div className="ht">
           <Keyword kw={h.keyword} file={org} />
           <Priority p={h.priority} />
-          <span className={'tt' + (done ? ' done' : '')}>{h.title ? <Inline text={h.title} /> : <i className="mut">без названия</i>}</span>
+          <span className={'tt' + (done ? ' done' : '')}>{h.title ? <Inline text={h.title} /> : <i className="mut">untitled</i>}</span>
           <Tags h={h} />
           {!open && body.trim() && <span className="more">…</span>}
         </div>
@@ -177,7 +177,7 @@ function HeadlineRow(props: {
       </div>
       {!readOnly ? (
         <button className="ed" onClick={() => navigate({ view: 'edit', path, line: h.line })}>
-          Править
+          Edit
         </button>
       ) : (
         <span />

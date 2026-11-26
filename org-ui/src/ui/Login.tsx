@@ -17,7 +17,7 @@ export function Login() {
     setError('');
     const ok = await login({ url: url.trim(), user, password });
     setBusy(false);
-    if (!ok) setError('Неверный логин или пароль');
+    if (!ok) setError('Wrong username or password');
   };
 
   return (
@@ -31,18 +31,18 @@ export function Login() {
           <input value={url} onChange={(e) => setUrl(e.target.value)} inputMode="url" autoComplete="url" required />
         </label>
         <label>
-          Пользователь
+          User
           <input value={user} onChange={(e) => setUser(e.target.value)} autoComplete="username" required autoFocus />
         </label>
         <label>
-          Пароль
+          Password
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
         </label>
         <div className="err">{error}</div>
         <button className="btn pri" type="submit" disabled={busy}>
-          {busy ? 'Проверяю…' : 'Войти'}
+          {busy ? 'Checking…' : 'Sign in'}
         </button>
-        <p className="meta">Логин и пароль хранятся в этом браузере (localStorage), как в organice.</p>
+        <p className="meta">Credentials are stored in this browser (localStorage), like organice does.</p>
       </form>
     </div>
   );

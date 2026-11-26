@@ -194,7 +194,7 @@ export const useStore = create<State & Actions>()((set, get) => ({
     const path = st.config.inbox.path;
     const item: OutboxItem = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, path, entry, createdAt: Date.now(), error: null };
     if (!st.client) {
-      queue(item, 'нет авторизации');
+      queue(item, 'not signed in');
       return 'queued';
     }
     const r = await appendToFile(st.client, path, entry);

@@ -128,13 +128,13 @@ export function applyHeadlineEdit(file: OrgFile, h: Headline, changes: HeadlineC
   const eol = fileEol(file);
   const newKw = changes.keyword !== undefined ? changes.keyword : h.keyword;
   if (newKw !== h.keyword && isDoneKeyword(file, newKw) && hasRepeater(h)) {
-    throw new EditError('Повторяющуюся запись нельзя отметить выполненной из UI');
+    throw new EditError('A repeating entry cannot be marked done from the UI');
   }
   if (changes.body !== undefined && !sensitiveBalanced(changes.body)) {
-    throw new EditError('В тексте незакрытый или лишний #+begin_sensitive / #+end_sensitive');
+    throw new EditError('Unbalanced #+begin_sensitive / #+end_sensitive in the text');
   }
   if (changes.body !== undefined && changes.body.split(/\r?\n/).some((l) => /^\*+[ \t]/.test(l))) {
-    throw new EditError('Строка тела, начинающаяся с «* », создала бы новый заголовок');
+    throw new EditError('A body line starting with "* " would create a new headline');
   }
 
   const splices: Splice[] = [];

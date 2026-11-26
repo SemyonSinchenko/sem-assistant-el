@@ -31,35 +31,35 @@ export function Header() {
     route.view === 'files'
       ? route.path ?? config.inbox.path
       : route.view === 'calendar'
-        ? 'Календарь'
+        ? 'Calendar'
         : route.view === 'new'
           ? '→ ' + config.inbox.path
-          : 'Правка: ' + route.path;
+          : 'Edit: ' + route.path;
   const seg = route.view === 'calendar' ? 'calendar' : 'files';
 
   return (
     <header className="top" ref={wrap}>
-      <button className="ib" onClick={() => setDrawer(!drawer)} aria-label="Показать или скрыть файлы">
+      <button className="ib" onClick={() => setDrawer(!drawer)} aria-label="Show or hide files">
         <Icon name="menu" size={20} />
       </button>
       <div className="brand">
         org<span>·</span>ui
       </div>
       <div className="where">
-        {!online && <span className="off">оффлайн · </span>}
+        {!online && <span className="off">offline · </span>}
         {where}
       </div>
       <div className="seg" role="tablist">
         <button className={seg === 'files' ? 'on' : ''} onClick={() => navigate({ view: 'files', path: useStore.getState().lastFile() })}>
-          Файлы
+          Files
         </button>
         <button className={seg === 'calendar' ? 'on' : ''} onClick={() => navigate({ view: 'calendar', cal: null, date: null })}>
-          Календарь
+          Calendar
         </button>
       </div>
       {outbox.length > 0 && (
         <div className="newwrap">
-          <button className="btn warn" onClick={() => (setBox(!box), setMenu(false))} aria-label="Неотправленные записи">
+          <button className="btn warn" onClick={() => (setBox(!box), setMenu(false))} aria-label="Unsent entries">
             <Icon name="outbox" size={16} />
             {outbox.length}
           </button>
@@ -69,7 +69,7 @@ export function Header() {
       <div className="newwrap">
         <button className="btn pri" aria-haspopup="true" aria-expanded={menu} onClick={() => (setMenu(!menu), setBox(false))}>
           <Icon name="plus" size={16} />
-          <span className="nl">Новая</span>
+          <span className="nl">New</span>
         </button>
         {menu && (
           <div className="menu">
@@ -86,13 +86,13 @@ export function Header() {
                 </span>
                 <span>
                   <b>{t.label}</b>
-                  <small>тег :{t.tag}:</small>
+                  <small>tag :{t.tag}:</small>
                 </span>
               </button>
             ))}
-            <div className="foot">Всегда append в конец {config.inbox.path}</div>
+            <div className="foot">Always appended to the end of {config.inbox.path}</div>
             <button className="logout" onClick={() => (setMenu(false), logout())}>
-              Выйти
+              Sign out
             </button>
           </div>
         )}
@@ -105,7 +105,7 @@ function OutboxMenu() {
   const { outbox, flushOutbox, flushing } = useStore();
   return (
     <div className="menu wide">
-      <div className="mh">Не отправлено: {outbox.length}</div>
+      <div className="mh">Unsent: {outbox.length}</div>
       {outbox.map((o) => (
         <div key={o.id} className="obi">
           <code>{o.entry.split('\n')[0]}</code>
@@ -115,7 +115,7 @@ function OutboxMenu() {
         </div>
       ))}
       <button className="btn pri sm" disabled={flushing} onClick={() => void flushOutbox()}>
-        {flushing ? 'Отправляю…' : 'Отправить сейчас'}
+        {flushing ? 'Sending…' : 'Send now'}
       </button>
     </div>
   );

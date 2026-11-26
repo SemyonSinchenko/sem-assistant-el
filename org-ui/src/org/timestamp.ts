@@ -33,8 +33,8 @@ const SINGLE =
   '((?:[ \\t]+(?:\\.\\+|\\+\\+|\\+|--?)\\d+[hdwmy])*)' + // cookies
   '[ \\t]*([>\\]])';
 
-/** Matches one timestamp, optionally followed by `--<range end>`. */
-export const TIMESTAMP_RE = new RegExp(`${SINGLE}(?:--${SINGLE})?`, 'g');
+/** Source of a regex matching one timestamp, optionally followed by `--<range end>`. */
+const TIMESTAMP_SRC = `${SINGLE}(?:--${SINGLE})?`;
 
 function pad2(n: number): string {
   return String(n).padStart(2, '0');
@@ -82,9 +82,9 @@ export interface FoundTimestamp {
 /** Return all well-formed timestamps in TEXT with positions. */
 export function findTimestamps(text: string): FoundTimestamp[] {
   const out: FoundTimestamp[] = [];
-  TIMESTAMP_RE.lastIndex = 0;
+  const re = new RegExp(TIMESTAMP_SRC, 'g');
   let m: RegExpExecArray | null;
-  while ((m = TIMESTAMP_RE.exec(text))) {
+  while ((m = re.exec(text))) {
     const g = Array.from(m);
     // brackets must match (<…> or […])
     if ((g[1] === '<') !== (g[7] === '>')) continue;

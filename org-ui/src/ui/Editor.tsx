@@ -138,9 +138,9 @@ export function Editor({ path, line }: { path: string; line: number }) {
     navigate(prev ?? { view: 'files', path });
   };
 
-  if (isReadOnly(config, path)) return <div className="page empty">Файл {path} только для чтения</div>;
-  if (missing) return <div className="page empty">Заголовок не найден: файл изменился. Откройте его заново.</div>;
-  if (!base || !form) return <div className="page empty">Загрузка…</div>;
+  if (isReadOnly(config, path)) return <div className="page empty">File {path} read-only</div>;
+  if (missing) return <div className="page empty">Headline not found: the file has changed. Reopen it.</div>;
+  if (!base || !form) return <div className="page empty">Loading…</div>;
 
   const { org, h } = base;
   const set = (patch: Partial<Form>) => setForm({ ...form, ...patch });
@@ -164,7 +164,7 @@ export function Editor({ path, line }: { path: string; line: number }) {
     setBusy(false);
     if (r.ok) {
       setFile(path, r.text, r.etag);
-      toast({ text: 'Сохранено: ' + path, detail: 'изменены только строки этого заголовка' });
+      toast({ text: 'Saved: ' + path, detail: 'only the lines of this headline changed' });
       leave();
     } else if (r.conflict) setConflict(r.serverSection);
     else setError(r.error);
@@ -180,21 +180,21 @@ export function Editor({ path, line }: { path: string; line: number }) {
     <div className="page">
       <div className="eh">
         <button className="btn" onClick={() => (dirty ? setConfirmCancel(true) : leave())}>
-          ← Назад
+          ← Back
         </button>
-        <h1>Правка</h1>
+        <h1>Edit entry</h1>
       </div>
       <div className="target">
-        Файл: <b>{path}</b>, меняется только этот заголовок
+        File: <b>{path}</b>, only this headline changes
       </div>
       {draft && (
         <div className="hint row-b">
-          Есть несохранённый черновик.
+          There is an unsaved draft.
           <button className="btn sm" onClick={() => (setForm(draft), setDraft(null))}>
-            Восстановить
+            Restore
           </button>
           <button className="btn sm" onClick={() => setDraft(null)}>
-            Нет
+            No
           </button>
         </div>
       )}
@@ -208,7 +208,7 @@ export function Editor({ path, line }: { path: string; line: number }) {
         >
           <div className="row">
             <label>
-              Состояние
+              State
               <select value={form.keyword} onChange={(e) => set({ keyword: e.target.value })}>
                 <option value="">—</option>
                 {org.todo.active.map((k) => (
@@ -219,13 +219,13 @@ export function Editor({ path, line }: { path: string; line: number }) {
                 {org.todo.done.map((k) => (
                   <option key={k} value={k} disabled={repeating && k !== h.keyword}>
                     {k}
-                    {repeating && k !== h.keyword ? ' (повторяющаяся — отмечать в Emacs/Orgzly)' : ''}
+                    {repeating && k !== h.keyword ? ' (repeating — mark it in Emacs/Orgzly)' : ''}
                   </option>
                 ))}
               </select>
             </label>
             <label>
-              Приоритет
+              Priority
               <select value={form.priority} onChange={(e) => set({ priority: e.target.value })}>
                 {['', 'A', 'B', 'C'].map((p) => (
                   <option key={p} value={p}>
@@ -236,16 +236,16 @@ export function Editor({ path, line }: { path: string; line: number }) {
             </label>
           </div>
           <label>
-            Заголовок
+            Title
             <input className="ti" value={form.title} onChange={(e) => set({ title: e.target.value })} autoComplete="off" />
           </label>
           <div className="lab">
-            Теги
+            Tags
             <div className="tagin">
               {form.tags.map((t, i) => (
                 <span className="tg" key={t}>
                   {t}
-                  <button type="button" aria-label={'Убрать тег ' + t} onClick={() => set({ tags: form.tags.filter((_, j) => j !== i) })}>
+                  <button type="button" aria-label={'Remove tag ' + t} onClick={() => set({ tags: form.tags.filter((_, j) => j !== i) })}>
                     ×
                   </button>
                 </span>
@@ -253,7 +253,7 @@ export function Editor({ path, line }: { path: string; line: number }) {
               <input
                 list="taglist"
                 value={tagInput}
-                placeholder="добавить и Enter"
+                placeholder="add, then Enter"
                 autoComplete="off"
                 onChange={(e) => setTagInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -275,23 +275,23 @@ export function Editor({ path, line }: { path: string; line: number }) {
             <legend>SCHEDULED</legend>
             <div className="row">
               <label>
-                Дата
+                Date
                 <input type="date" value={form.sDate} onChange={(e) => set({ sDate: e.target.value })} />
               </label>
               <label>
-                Начало
+                Start
                 <input type="time" value={form.sStart} onChange={(e) => set({ sStart: e.target.value })} />
               </label>
               <label>
-                Конец
+                End
                 <input type="time" value={form.sEnd} onChange={(e) => set({ sEnd: e.target.value })} disabled={!form.sStart} />
               </label>
               <label>
-                Повтор
+                Repeat
                 <select value={form.sRep} onChange={(e) => set({ sRep: e.target.value })}>
                   {reps.map((r) => (
                     <option key={r} value={r}>
-                      {r || 'нет'}
+                      {r || 'none'}
                     </option>
                   ))}
                 </select>
@@ -302,37 +302,37 @@ export function Editor({ path, line }: { path: string; line: number }) {
             <legend>DEADLINE</legend>
             <div className="row">
               <label>
-                Дата
+                Date
                 <input type="date" value={form.dDate} onChange={(e) => set({ dDate: e.target.value })} />
               </label>
               <label>
-                Время
+                Time
                 <input type="time" value={form.dTime} onChange={(e) => set({ dTime: e.target.value })} disabled={!form.dDate} />
               </label>
             </div>
           </fieldset>
           <label>
-            Текст
+            Text
             <textarea rows={10} value={form.body} onChange={(e) => set({ body: e.target.value })} />
           </label>
           {h.properties.length > 0 && (
             <details>
-              <summary>Свойства (не редактируются)</summary>
+              <summary>Properties (read-only)</summary>
               <pre>{h.properties.map(([k, v]) => `:${k}: ${v}`).join('\n')}</pre>
             </details>
           )}
           <div className="err">{error || preview.err}</div>
           <div className="acts">
             <button className="btn pri" type="submit" disabled={!dirty || busy || !!preview.err}>
-              {busy ? 'Сохраняю…' : 'Сохранить'}
+              {busy ? 'Saving…' : 'Save'}
             </button>
             <button className="btn" type="button" onClick={() => (dirty ? setConfirmCancel(true) : leave())}>
-              Отмена
+              Cancel
             </button>
           </div>
         </form>
         <aside className="src">
-          <div className="sh">Изменения</div>
+          <div className="sh">Changes</div>
           {preview.diff.length ? (
             <pre className="diff">
               {preview.diff.map((d, i) => (
@@ -342,53 +342,53 @@ export function Editor({ path, line }: { path: string; line: number }) {
               ))}
             </pre>
           ) : (
-            <pre className="mut">Пока ничего не изменено</pre>
+            <pre className="mut">Nothing changed yet</pre>
           )}
         </aside>
       </div>
       {confirmCancel && (
         <Dialog
-          title="Отменить изменения?"
+          title="Discard changes?"
           onClose={() => setConfirmCancel(false)}
           actions={
             <>
               <button className="btn pri" onClick={leave}>
-                Отменить изменения
+                Discard changes
               </button>
               <button className="btn" onClick={() => setConfirmCancel(false)}>
-                Продолжить правку
+                Keep editing
               </button>
             </>
           }
         >
-          Несохранённые изменения будут потеряны.
+          Unsaved changes will be lost.
         </Dialog>
       )}
       {conflict !== undefined && (
         <Dialog
-          title="Заголовок изменился на сервере"
+          title="The headline changed on the server"
           onClose={() => setConflict(undefined)}
           actions={
             <>
               <button className="btn pri" disabled={conflict === null} onClick={() => (setConflict(undefined), void doSave(true))}>
-                Перезаписать моей версией
+                Overwrite with my version
               </button>
               <button className="btn" onClick={() => setConflict(undefined)}>
-                Отменить
+                Cancel
               </button>
             </>
           }
         >
           {conflict === null ? (
-            <p>Заголовок не найден в свежей версии файла. Откройте файл заново.</p>
+            <p>The headline is not in the current version of the file. Reopen the file.</p>
           ) : (
             <div className="cmp">
               <div>
-                <div className="sh">На сервере</div>
+                <div className="sh">On the server</div>
                 <pre>{conflict}</pre>
               </div>
               <div>
-                <div className="sh">Было, когда открыли</div>
+                <div className="sh">When you opened it</div>
                 <pre>{target.sectionLines.join('\n')}</pre>
               </div>
             </div>

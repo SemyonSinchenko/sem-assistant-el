@@ -4,8 +4,9 @@ import { Fragment, useState, type ReactNode } from 'react';
 
 const SAFE_URL = /^(https?:|mailto:)/i;
 
-const INLINE_RE =
-  /\[\[([^\]\n]+?)\](?:\[([^\]\n]+?)\])?\]|(https?:\/\/[^\s<>\]]+[^\s<>\].,;:!?)'"])|(^|[\s(])([*/=~+])(\S(?:[^\n]*?\S)?)\5(?=[\s).,;:!?'"]|$)/g;
+const INLINE_SRC =
+  /\[\[([^\]\n]+?)\](?:\[([^\]\n]+?)\])?\]|(https?:\/\/[^\s<>\]]+[^\s<>\].,;:!?)'"])|(^|[\s(])([*/=~+])(\S(?:[^\n]*?\S)?)\5(?=[\s).,;:!?'"]|$)/
+    .source;
 
 function link(url: string, label: ReactNode, key: number): ReactNode {
   if (!SAFE_URL.test(url)) return <span key={key} className="olink-x">{label}</span>;
@@ -25,9 +26,11 @@ export function renderInline(text: string): ReactNode[] {
   const out: ReactNode[] = [];
   let last = 0;
   let k = 0;
-  INLINE_RE.lastIndex = 0;
+  // a fresh regex per call: renderInline recurses, a shared /g regex would
+  // have its lastIndex reset by the nested call and loop forever
+  const re = new RegExp(INLINE_SRC, 'g');
   let m: RegExpExecArray | null;
-  while ((m = INLINE_RE.exec(text))) {
+  while ((m = re.exec(text))) {
     let start = m.index;
     if (m[4] !== undefined) start += m[4].length;
     if (start > last) out.push(text.slice(last, start));

@@ -32,9 +32,9 @@ export interface Config {
 export const DEFAULT_CONFIG: Config = {
   inbox: { path: 'inbox-mobile.org' },
   templates: [
-    { id: 'link', label: 'Ссылка', tag: 'link', title: 'firstLine', icon: 'link' },
-    { id: 'task', label: 'Задача', tag: 'task', title: 'firstLine', icon: 'check' },
-    { id: 'journal', label: 'Журнал', tag: 'journal', title: 'timestamp', icon: 'book' },
+    { id: 'link', label: 'Link', tag: 'link', title: 'firstLine', icon: 'link' },
+    { id: 'task', label: 'Task', tag: 'task', title: 'firstLine', icon: 'check' },
+    { id: 'journal', label: 'Journal', tag: 'journal', title: 'timestamp', icon: 'book' },
   ],
   todoKeywords: { active: ['TODO', 'NEXT', 'WAITING'], done: ['DONE', 'CANCELLED'] },
   readOnly: ['inbox-mobile.org'],
@@ -49,7 +49,7 @@ export const DEFAULT_CONFIG: Config = {
     bodyTimestamps: false,
     noDragFiles: [],
   },
-  filterPresets: [{ name: 'Всё' }],
+  filterPresets: [{ name: 'All' }],
 };
 
 export async function loadConfig(): Promise<Config> {
