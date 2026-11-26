@@ -44,6 +44,8 @@ services:
       - ./webdav/apache/start-webdav.sh:/usr/local/bin/start-webdav.sh:ro,z
       - ./webdav/apache/httpd-webdav.conf.template:/usr/local/apache2/conf/extra/httpd-webdav.conf.template:ro,z
       - ./webdav/apache/httpd-orgnote.conf.template:/usr/local/apache2/conf/extra/httpd-orgnote.conf.template:ro,z
+      # org-ui static bundle (build with: cd org-ui && npm ci && npm run build)
+      - ./org-ui/dist:/usr/local/apache2/ui:ro,z
       - /etc/letsencrypt:/certs:ro,z
     environment:
       - WEBDAV_DOMAIN=${WEBDAV_DOMAIN:-example.com}

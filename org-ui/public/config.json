@@ -1,0 +1,32 @@
+{
+  "inbox": {
+    "path": "inbox-mobile.org"
+  },
+  "templates": [
+    { "id": "link",    "label": "Ссылка", "tag": "link",    "title": "firstLine", "icon": "link",  "placeholder": "Вставьте URL (можно с комментарием на следующих строках)" },
+    { "id": "task",    "label": "Задача", "tag": "task",    "title": "firstLine", "icon": "check", "placeholder": "Например: позвонить бухгалтеру завтра !" },
+    { "id": "journal", "label": "Журнал", "tag": "journal", "title": "timestamp", "icon": "book",  "placeholder": "Что произошло?" }
+  ],
+  "todoKeywords": { "active": ["TODO", "NEXT", "WAITING"], "done": ["DONE", "CANCELLED"] },
+  "readOnly": ["inbox-mobile.org", "errors.org", "daily-plan.org"],
+  "fileColors": {
+    "inbox-mobile.org": "#1d2bd8",
+    "tasks.org": "#c2410c",
+    "rec-tasks.org": "#0e7490",
+    "errors.org": "#c81e1e"
+  },
+  "calendar": {
+    "defaultView": "timeGridWeek",
+    "mobileDefaultView": "timeGridDay",
+    "firstDay": 1,
+    "slotMinTime": "06:00",
+    "slotMaxTime": "24:00",
+    "scrollTime": "08:00",
+    "bodyTimestamps": false,
+    "noDragFiles": []
+  },
+  "filterPresets": [
+    { "name": "Всё" },
+    { "name": "Задачи", "files": ["tasks.org", "rec-tasks.org", "errors.org"] }
+  ]
+}

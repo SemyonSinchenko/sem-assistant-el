@@ -28,14 +28,27 @@
     (should (string-match-p "WEBDAV_PASSWORD=.*ChangeMeStrongPassword2026" compose))
     (should (string-match-p "start-webdav\\.sh" compose))))
 
-(ert-deftest sem-webdav-config-test-apache-template-enforces-conditional-writes ()
-  "Test that Apache template rejects missing or weak write preconditions."
+(ert-deftest sem-webdav-config-test-apache-template-has-no-rewrite-gate ()
+  "Test that Apache template leaves conditional writes to mod_dav.
+Unconditional PUTs (organice) must pass; If-Match is checked by mod_dav."
   (let ((template (sem-webdav-config-test--read
                    "webdav/apache/httpd-webdav.conf.template")))
-    (should (string-match-p (regexp-quote "RewriteCond %{HTTP:If-Match} ^$") template))
-    (should (string-match-p (regexp-quote "RewriteRule ^ - [R=428,L]") template))
-    (should (string-match-p (regexp-quote "RewriteCond %{HTTP:If-Match} ^W/") template))
-    (should (string-match-p (regexp-quote "RewriteRule ^ - [R=412,L]") template))))
+    (should-not (string-match-p "RewriteRule" template))
+    (should-not (string-match-p "RewriteCond" template))
+    (should-not (string-match-p "R=428" template))))
+
+(ert-deftest sem-webdav-config-test-apache-template-serves-org-ui ()
+  "Test that Apache template serves org-ui under /ui without DAV or auth."
+  (let ((template (sem-webdav-config-test--read
+                   "webdav/apache/httpd-webdav.conf.template"))
+        (compose (sem-webdav-config-test--read "docker-compose.yml")))
+    (should (string-match-p (regexp-quote "Alias /ui /usr/local/apache2/ui") template))
+    ;; DAV must be bound to the data directory, not to <Location "/">,
+    ;; otherwise /ui would accept PUT (mod_dav cannot disable a subtree).
+    (should (string-match-p "<Directory \"/data/tasks\">[^<]*Dav On" template))
+    (should-not (string-match-p "<Location \"/\">[^<]*Dav On" template))
+    (should (string-match-p "<Location \"/ui\">[^<]*Require all granted" template))
+    (should (string-match-p (regexp-quote "./org-ui/dist:/usr/local/apache2/ui:ro,z") compose))))
 
 (ert-deftest sem-webdav-config-test-integration-runtime-remains-non-tls ()
   "Test that integration override remains independent from production TLS/runtime."

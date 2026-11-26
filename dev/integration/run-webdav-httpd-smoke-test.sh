@@ -89,6 +89,11 @@ if [[ -d "$TEST_DATA_DIR" || -d "$TEST_CERTS_DIR" ]]; then
 fi
 mkdir -p "$TEST_SERVED_DIR" "$TEST_CERTS_DIR/live/$WEBDAV_DOMAIN" "$TEST_CERTS_DIR/live/$ORGANICE_DOMAIN"
 printf 'v1\n' > "$TEST_SERVED_DIR/simple.txt"
+# The compose file mounts ./org-ui/dist at /ui; make sure something is there.
+if [[ ! -f "$REPO_ROOT/org-ui/dist/index.html" ]]; then
+  mkdir -p "$REPO_ROOT/org-ui/dist"
+  printf '<!doctype html><title>org-ui smoke</title>\n' > "$REPO_ROOT/org-ui/dist/index.html"
+fi
 
 openssl req -x509 -nodes -newkey rsa:2048 \
   -keyout "$TEST_CERTS_DIR/live/$WEBDAV_DOMAIN/privkey.pem" \
@@ -129,14 +134,19 @@ fi
 echo "PASS: WebDAV reads host-mounted data"
 
 echo "== Check 2: conditional PUT behavior =="
-etag_v1=$(extract_etag "simple.txt")
-echo "INFO: detected ETag: ${etag_v1}"
-
+# organice writes without preconditions; such PUTs must keep working.
 status_no_header=$(curl -k -sS -o /dev/null -w '%{http_code}' \
   -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
   -X PUT --data-binary $'v2-no-header\n' \
   "${WEBDAV_BASE_URL}/simple.txt" || true)
-assert_status "428" "$status_no_header" "PUT rejected when If-Match missing"
+if [[ ! "$status_no_header" =~ ^20[0-9]$ ]]; then
+  echo "FAIL: unconditional PUT should succeed, got HTTP $status_no_header"
+  exit 1
+fi
+echo "PASS: unconditional PUT accepted (HTTP $status_no_header)"
+sleep 1
+etag_v1=$(extract_etag "simple.txt")
+echo "INFO: detected ETag: ${etag_v1}"
 
 if [[ "$etag_v1" =~ ^W/ ]]; then
   echo "INFO: weak ETag detected; using If-Unmodified-Since for positive conditional checks"
@@ -281,6 +291,18 @@ echo "PASS: OPTIONS preflight returns expected CORS metadata"
 echo "== Check 8: non-OPTIONS request without auth remains unauthorized =="
 unauth_get_status=$(curl -k -sS -o /dev/null -w '%{http_code}' "${WEBDAV_BASE_URL}/simple.txt" || true)
 assert_status "401" "$unauth_get_status" "unauthenticated GET remains unauthorized"
+
+echo "== Check 8b: org-ui static is served without auth and is not writable =="
+ui_status=$(curl -k -sS -o /dev/null -w '%{http_code}' "${WEBDAV_BASE_URL}/ui/" || true)
+assert_status "200" "$ui_status" "org-ui index served without auth"
+ui_put_status=$(curl -k -sS -o /dev/null -w '%{http_code}' \
+  -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
+  -X PUT --data-binary 'x' "${WEBDAV_BASE_URL}/ui/probe.txt" || true)
+if [[ "$ui_put_status" =~ ^20[0-9]$ ]]; then
+  echo "FAIL: PUT under /ui must not be accepted (got HTTP $ui_put_status)"
+  exit 1
+fi
+echo "PASS: PUT under /ui rejected (HTTP $ui_put_status)"
 
 echo "== Check 9: live certificate rotation after on-disk renewal =="
 

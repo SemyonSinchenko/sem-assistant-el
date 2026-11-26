@@ -152,6 +152,21 @@ tasks and settings; knowledge files live in the git repository.
 - =OPTIONS= preflight is unauthenticated for browser compatibility, while
   non-=OPTIONS= WebDAV methods remain authenticated.
 
+** org-ui (own web UI, next to organice)
+- Static SPA in =org-ui/= (Vite + React + FullCalendar), served by the WebDAV
+  vhost at =https://WEBDAV_DOMAIN/ui/=: same origin as WebDAV, so no extra
+  domain, certificate or CORS. organice keeps working unchanged.
+- Login works like organice (WebDAV URL, user, password kept in the
+  browser's localStorage). =/ui/= itself is public static files and is not
+  writable: DAV is enabled on =<Directory "/data/tasks">= only.
+- Every write uses =If-Match= (inbox: append only, retried on =412=); captures
+  that cannot be sent wait in a local outbox.
+- Build: =cd org-ui && npm ci && npm run build= (or in a =node:22= container);
+  compose mounts =./org-ui/dist= at =/usr/local/apache2/ui=. Runtime settings
+  live in =org-ui/dist/config.json= (source: =org-ui/public/config.json=).
+- Tests: =npm test= (unit), =npm run e2e= (Playwright against a local
+  Apache started from the production vhost template; needs =apache2=).
+
 ** Dual-domain TLS and rollout sequence
 1. Configure DNS for both =WEBDAV_DOMAIN= and =ORGANICE_DOMAIN= to point to the
    same host.

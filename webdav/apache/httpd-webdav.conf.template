@@ -12,14 +12,17 @@ DavLockDB /tmp/DavLock
   # live in /data/org-roam and are not reachable from WebDAV clients.
   DocumentRoot "/data/tasks"
 
+  # DAV is enabled on the data directory only, so aliased paths such as /ui
+  # are plain static files (mod_dav cannot switch off a subtree of a
+  # DAV-enabled <Location>).
   <Directory "/data/tasks">
+    Dav On
     Options Indexes FollowSymLinks
     AllowOverride None
     Require all granted
   </Directory>
 
   <Location "/">
-    Dav On
     Header always set Vary "Origin" "expr=-n %{req:Origin}"
     Header always set Access-Control-Allow-Origin "@@ORGANICE_ORIGIN@@" "expr=%{req:Origin} == '@@ORGANICE_ORIGIN@@'"
     Header always set Access-Control-Allow-Credentials "true" "expr=%{req:Origin} == '@@ORGANICE_ORIGIN@@'"
@@ -33,24 +36,31 @@ DavLockDB /tmp/DavLock
     <LimitExcept OPTIONS>
       Require valid-user
     </LimitExcept>
-
-    RewriteEngine Off
-
-    # Handle unauthenticated CORS preflight without mutating DAV data.
-    RewriteCond %{REQUEST_METHOD} ^OPTIONS$ [NC]
-    RewriteRule ^ - [R=204,L]
-
-    # Reject unconditional writes when no supported precondition is provided.
-    RewriteCond %{REQUEST_METHOD} ^(PUT|DELETE|MOVE|COPY|PROPPATCH)$ [NC]
-    RewriteCond %{HTTP:If-Match} ^$
-    RewriteCond %{HTTP:If-Unmodified-Since} ^$
-    RewriteRule ^ - [R=428,L]
-
-    # Reject weak validators for write methods.
-    RewriteCond %{REQUEST_METHOD} ^(PUT|DELETE|MOVE|COPY|PROPPATCH)$ [NC]
-    RewriteCond %{HTTP:If-Match} ^W/ [NC]
-    RewriteRule ^ - [R=412,L]
   </Location>
+
+  # org-ui: static SPA served next to WebDAV on the same origin (no CORS).
+  # The bundle holds no data, so it is public; the app sends Basic auth
+  # itself on every WebDAV request.
+  Alias /ui /usr/local/apache2/ui
+  <Directory "/usr/local/apache2/ui">
+    Options None
+    AllowOverride None
+    Require all granted
+  </Directory>
+
+  <Location "/ui">
+    Require all granted
+    Header always unset Access-Control-Allow-Origin
+    Header always unset Access-Control-Allow-Credentials
+  </Location>
+
+  <LocationMatch "^/ui/(index\.html|config\.json)?$">
+    Header set Cache-Control "no-cache"
+  </LocationMatch>
+
+  <LocationMatch "^/ui/assets/">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </LocationMatch>
 
   ErrorLog /proc/self/fd/2
   CustomLog /proc/self/fd/1 combined
